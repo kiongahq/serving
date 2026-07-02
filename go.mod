@@ -4,6 +4,8 @@ go 1.23.0
 
 require github.com/jackc/pgx/v5 v5.7.2
 
+require github.com/dgryski/go-rendezvous v0.0.0-20200823014737-9f7001d12a5f // indirect
+
 require (
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
@@ -39,6 +41,7 @@ require (
 	github.com/prometheus/client_model v0.6.1 // indirect
 	github.com/prometheus/common v0.55.0 // indirect
 	github.com/prometheus/procfs v0.15.1 // indirect
+	github.com/redis/go-redis/v9 v9.7.3
 	github.com/spf13/pflag v1.0.5 // indirect
 	github.com/x448/float16 v0.8.4 // indirect
 	go.uber.org/multierr v1.11.0 // indirect
