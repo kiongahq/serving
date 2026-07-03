@@ -18,9 +18,11 @@ import (
 	"time"
 )
 
-const apiVersion = "v1.43"
-
 type Manager struct {
+	// APIVersion pins the Docker Engine API version (e.g. "v1.44"). Empty
+	// uses unversioned paths, which the daemon serves at its newest version.
+	APIVersion string
+
 	// BaseURL of the Docker Engine API. Empty means the default unix socket.
 	BaseURL string
 	// SocketPath for unix transport when BaseURL is empty.
@@ -71,6 +73,9 @@ func (m *Manager) do(ctx context.Context, method, path string, input any, output
 	if base == "" {
 		base = "http://docker"
 	}
+	if m.APIVersion != "" {
+		base += "/" + m.APIVersion
+	}
 	var body io.Reader
 	if input != nil {
 		raw, err := json.Marshal(input)
@@ -79,7 +84,7 @@ func (m *Manager) do(ctx context.Context, method, path string, input any, output
 		}
 		body = bytes.NewReader(raw)
 	}
-	request, err := http.NewRequestWithContext(ctx, method, base+"/"+apiVersion+path, body)
+	request, err := http.NewRequestWithContext(ctx, method, base+path, body)
 	if err != nil {
 		return 0, err
 	}

@@ -15,9 +15,9 @@ func fakeDocker(t *testing.T) (*httptest.Server, *[]string) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls = append(calls, r.Method+" "+r.URL.Path)
 		switch {
-		case r.Method == http.MethodDelete && strings.HasPrefix(r.URL.Path, "/v1.43/containers/"):
+		case r.Method == http.MethodDelete && strings.HasPrefix(r.URL.Path, "/containers/"):
 			w.WriteHeader(http.StatusNotFound) // nothing to replace
-		case r.Method == http.MethodPost && r.URL.Path == "/v1.43/containers/create":
+		case r.Method == http.MethodPost && r.URL.Path == "/containers/create":
 			var payload map[string]any
 			_ = json.NewDecoder(r.Body).Decode(&payload)
 			cmd := payload["Cmd"].([]any)
@@ -30,9 +30,9 @@ func fakeDocker(t *testing.T) (*httptest.Server, *[]string) {
 			}
 			w.WriteHeader(http.StatusCreated)
 			_, _ = w.Write([]byte(`{"Id":"ctr-1"}`))
-		case r.Method == http.MethodPost && r.URL.Path == "/v1.43/containers/ctr-1/start":
+		case r.Method == http.MethodPost && r.URL.Path == "/containers/ctr-1/start":
 			w.WriteHeader(http.StatusNoContent)
-		case r.Method == http.MethodGet && r.URL.Path == "/v1.43/containers/json":
+		case r.Method == http.MethodGet && r.URL.Path == "/containers/json":
 			_, _ = w.Write([]byte(`[{"State":"running","Labels":{"mlaiops.serving":"true","mlaiops.model":"churn","mlaiops.artifact":"models:/churn-classifier/3"}}]`))
 		default:
 			t.Errorf("unexpected docker call %s %s", r.Method, r.URL.Path)
@@ -84,6 +84,21 @@ func TestListReadsLabels(t *testing.T) {
 	}
 	if len(deployments) != 1 || deployments[0].Name != "churn" || deployments[0].State != "running" {
 		t.Fatalf("unexpected deployments: %+v", deployments)
+	}
+}
+
+func TestPinnedAPIVersionPrefixesPaths(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasPrefix(r.URL.Path, "/v1.44/containers/") {
+			t.Fatalf("expected versioned path, got %s", r.URL.Path)
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer server.Close()
+	manager := testManager(server.URL)
+	manager.APIVersion = "v1.44"
+	if err := manager.Undeploy(context.Background(), "x"); err != nil {
+		t.Fatal(err)
 	}
 }
 

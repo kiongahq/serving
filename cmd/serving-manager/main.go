@@ -28,6 +28,8 @@ func main() {
 	if host := os.Getenv("DOCKER_HOST_URL"); host != "" {
 		manager.BaseURL = host
 	}
+	// Unversioned by default (daemon-latest); pin with DOCKER_API_VERSION=v1.44.
+	manager.APIVersion = os.Getenv("DOCKER_API_VERSION")
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
