@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mlaiops/platform/internal/serving"
+	"github.com/ml-ai-ops/platform/internal/serving"
 )
 
 func main() {

@@ -1,4 +1,4 @@
-module github.com/mlaiops/platform
+module github.com/ml-ai-ops/platform
 
 go 1.23.0
 
