@@ -1,5 +1,5 @@
 // Package serving manages real model-serving containers on the local Docker
-// engine: the Compose-native fulfilment of the PRD inference engine (KServe
+// engine: the Compose-native fulfilment of the inference engine (KServe
 // remains the Kubernetes path). Each deployed model version runs
 // `mlflow models serve` in its own container on the platform network.
 package serving
