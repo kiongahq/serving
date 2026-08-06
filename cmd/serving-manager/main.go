@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -22,6 +23,7 @@ func main() {
 		}
 	}
 	manager := serving.NewManager(getenv("SERVE_IMAGE", "mlaiops-mlflow"), getenv("PLATFORM_NETWORK", "mlaiops_default"), env)
+	manager.PidsLimit = getenvInt64("SERVE_PIDS_LIMIT", manager.PidsLimit)
 	if socket := os.Getenv("DOCKER_SOCKET"); socket != "" {
 		manager.SocketPath = socket
 	}
@@ -53,8 +55,9 @@ func main() {
 			return
 		}
 		var request struct {
-			Name        string `json:"name"`
-			ArtifactURI string `json:"artifact_uri"`
+			Name         string `json:"name"`
+			ArtifactURI  string `json:"artifact_uri"`
+			ServingImage string `json:"serving_image,omitempty"`
 		}
 		decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20))
 		decoder.DisallowUnknownFields()
@@ -62,7 +65,7 @@ func main() {
 			write(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 			return
 		}
-		endpoint, err := manager.Deploy(r.Context(), request.Name, request.ArtifactURI)
+		endpoint, err := manager.Deploy(r.Context(), request.Name, request.ArtifactURI, request.ServingImage)
 		if err != nil {
 			write(w, http.StatusUnprocessableEntity, map[string]string{"error": err.Error()})
 			return
@@ -102,4 +105,17 @@ func getenv(key, fallback string) string {
 		return value
 	}
 	return fallback
+}
+
+func getenvInt64(key string, fallback int64) int64 {
+	value := strings.TrimSpace(os.Getenv(key))
+	if value == "" {
+		return fallback
+	}
+	parsed, err := strconv.ParseInt(value, 10, 64)
+	if err != nil || parsed <= 0 {
+		log.Printf("ignoring invalid %s=%q; using %d", key, value, fallback)
+		return fallback
+	}
+	return parsed
 }

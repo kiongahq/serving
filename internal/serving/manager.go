@@ -7,6 +7,7 @@ package serving
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -16,6 +17,12 @@ import (
 	"net/url"
 	"strings"
 	"time"
+	"unicode"
+)
+
+const (
+	defaultPidsLimit int64 = 256
+	maximumPidsLimit int64 = 4096
 )
 
 type Manager struct {
@@ -27,7 +34,9 @@ type Manager struct {
 	BaseURL string
 	// SocketPath for unix transport when BaseURL is empty.
 	SocketPath string
-	// Image run for every deployment (must contain mlflow + S3 deps).
+	// Image is the fallback for deployments that do not register a model-specific
+	// serving image. It must contain MLflow, artifact-store support, and the model's
+	// framework dependencies.
 	Image string
 	// Network the container joins so the gateway can reach it by name.
 	Network string
@@ -35,19 +44,22 @@ type Manager struct {
 	Env []string
 	// Port the model server listens on inside the container.
 	Port int
+	// PidsLimit bounds processes and threads in each untrusted serving container.
+	PidsLimit int64
 
 	client *http.Client
 }
 
 type Deployment struct {
-	Name        string `json:"name"`
-	ArtifactURI string `json:"artifact_uri"`
-	Endpoint    string `json:"endpoint"`
-	State       string `json:"state"`
+	Name         string `json:"name"`
+	ArtifactURI  string `json:"artifact_uri"`
+	ServingImage string `json:"serving_image,omitempty"`
+	Endpoint     string `json:"endpoint"`
+	State        string `json:"state"`
 }
 
 func NewManager(image, network string, env []string) *Manager {
-	return &Manager{SocketPath: "/var/run/docker.sock", Image: image, Network: network, Env: env, Port: 5001}
+	return &Manager{SocketPath: "/var/run/docker.sock", Image: image, Network: network, Env: env, Port: 5001, PidsLimit: defaultPidsLimit}
 }
 
 func (m *Manager) httpClient() *http.Client {
@@ -108,21 +120,97 @@ func (m *Manager) do(ctx context.Context, method, path string, input any, output
 	return response.StatusCode, nil
 }
 
-func containerName(deployment string) string { return "mlaiops-serve-" + deployment }
+const containerPrefix = "mlaiops-serve-"
+
+// containerName preserves existing DNS-safe model names. Unsafe or overlong names
+// receive a readable slug plus a stable hash so Docker and platform DNS always see
+// a valid, collision-resistant label without changing the model's API name.
+func containerName(deployment string) string {
+	original := strings.TrimSpace(deployment)
+	lower := strings.ToLower(original)
+	changed := lower != original
+	var slug strings.Builder
+	lastHyphen := false
+	for _, char := range lower {
+		valid := char >= 'a' && char <= 'z' || char >= '0' && char <= '9'
+		if valid {
+			slug.WriteRune(char)
+			lastHyphen = false
+			continue
+		}
+		changed = changed || char != '-'
+		if slug.Len() > 0 && !lastHyphen {
+			slug.WriteByte('-')
+			lastHyphen = true
+		}
+	}
+	value := strings.Trim(slug.String(), "-")
+	changed = changed || value != lower
+	maxSegment := 63 - len(containerPrefix)
+	if !changed && len(value) <= maxSegment {
+		return containerPrefix + value
+	}
+	if value == "" {
+		value = "model"
+	}
+	hash := sha256.Sum256([]byte(original))
+	suffix := fmt.Sprintf("-%x", hash[:6])
+	if len(value) > maxSegment-len(suffix) {
+		value = strings.TrimRight(value[:maxSegment-len(suffix)], "-")
+	}
+	return containerPrefix + value + suffix
+}
+
+func normalizeImage(value string) (string, error) {
+	if value == "" {
+		return "", nil
+	}
+	if strings.IndexFunc(value, unicode.IsControl) >= 0 {
+		return "", errors.New("serving_image must not contain control characters")
+	}
+	image := strings.TrimSpace(value)
+	if image == "" {
+		return "", errors.New("serving_image must not be whitespace-only")
+	}
+	if strings.IndexFunc(image, unicode.IsSpace) >= 0 {
+		return "", errors.New("serving_image must not contain whitespace")
+	}
+	return image, nil
+}
 
 // Deploy runs a serving container for the artifact and returns its in-network
-// endpoint. An existing deployment with the same name is replaced, which is
-// what makes rollback and re-deploy idempotent.
-func (m *Manager) Deploy(ctx context.Context, name, artifactURI string) (string, error) {
+// endpoint. servingImage selects a framework-compatible runtime for this model;
+// the manager's configured Image remains the fallback. An existing deployment
+// with the same name is replaced, which makes rollback and re-deploy idempotent.
+func (m *Manager) Deploy(ctx context.Context, name, artifactURI, servingImage string) (string, error) {
+	name = strings.TrimSpace(name)
+	artifactURI = strings.TrimSpace(artifactURI)
 	if name == "" || artifactURI == "" {
 		return "", errors.New("name and artifact_uri are required")
 	}
-	if m.Image == "" {
+	image, err := normalizeImage(servingImage)
+	if err != nil {
+		return "", err
+	}
+	if image == "" {
+		image, err = normalizeImage(m.Image)
+		if err != nil {
+			return "", err
+		}
+	}
+	if image == "" {
 		return "", errors.New("serving image is not configured")
+	}
+	pidsLimit := m.PidsLimit
+	if pidsLimit <= 0 {
+		pidsLimit = defaultPidsLimit
+	}
+	if pidsLimit > maximumPidsLimit {
+		pidsLimit = maximumPidsLimit
 	}
 	_ = m.Undeploy(ctx, name)
 	create := map[string]any{
-		"Image": m.Image,
+		"Image": image,
 		"Cmd": []string{
 			"mlflow", "models", "serve",
 			"-m", artifactURI,
@@ -135,8 +223,15 @@ func (m *Manager) Deploy(ctx context.Context, name, artifactURI string) (string,
 			"mlaiops.serving":  "true",
 			"mlaiops.model":    name,
 			"mlaiops.artifact": artifactURI,
+			"mlaiops.image":    image,
 		},
-		"HostConfig": map[string]any{"NetworkMode": m.Network, "RestartPolicy": map[string]any{"Name": "unless-stopped"}},
+		"HostConfig": map[string]any{
+			"NetworkMode":   m.Network,
+			"RestartPolicy": map[string]any{"Name": "unless-stopped"},
+			"CapDrop":       []string{"ALL"},
+			"SecurityOpt":   []string{"no-new-privileges"},
+			"PidsLimit":     pidsLimit,
+		},
 	}
 	var created struct {
 		ID string `json:"Id"`
@@ -174,10 +269,11 @@ func (m *Manager) List(ctx context.Context) ([]Deployment, error) {
 	for _, container := range containers {
 		name := container.Labels["mlaiops.model"]
 		deployments = append(deployments, Deployment{
-			Name:        name,
-			ArtifactURI: container.Labels["mlaiops.artifact"],
-			Endpoint:    fmt.Sprintf("http://%s:%d", containerName(name), m.Port),
-			State:       container.State,
+			Name:         name,
+			ArtifactURI:  container.Labels["mlaiops.artifact"],
+			ServingImage: container.Labels["mlaiops.image"],
+			Endpoint:     fmt.Sprintf("http://%s:%d", containerName(name), m.Port),
+			State:        container.State,
 		})
 	}
 	return deployments, nil
