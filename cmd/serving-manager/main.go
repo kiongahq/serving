@@ -5,6 +5,7 @@ package main
 
 import (
 	"encoding/json"
+	"github.com/ml-ai-ops/platform/internal/runtimeconfig"
 	"log"
 	"net/http"
 	"os"
@@ -16,6 +17,9 @@ import (
 )
 
 func main() {
+	if err := runtimeconfig.Load(); err != nil {
+		log.Fatal(err)
+	}
 	env := []string{}
 	for _, key := range []string{"MLFLOW_TRACKING_URI", "MLFLOW_S3_ENDPOINT_URL", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"} {
 		if value := os.Getenv(key); value != "" {
