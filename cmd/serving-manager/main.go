@@ -5,7 +5,7 @@ package main
 
 import (
 	"encoding/json"
-	"github.com/kiongahq/platform/internal/runtimeconfig"
+	"github.com/kiongahq/serving/internal/runtimeconfig"
 	"log"
 	"net/http"
 	"os"
@@ -13,7 +13,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/kiongahq/platform/internal/serving"
+	"github.com/kiongahq/serving/internal/serving"
 )
 
 func main() {

@@ -1,11 +1,9 @@
-# Local Go-service build context. Keeping it inside go/ avoids large or
-# unavailable files elsewhere in a macOS iCloud-backed checkout.
 FROM golang:1.25-alpine AS build
-WORKDIR /src/go
+WORKDIR /src
 COPY go.mod go.sum ./
 RUN --mount=type=cache,id=kionga-go-mod,target=/go/pkg/mod go mod download
 COPY . ./
-ARG SERVICE=gateway
+ARG SERVICE=serving-manager
 RUN --mount=type=cache,id=kionga-go-mod,target=/go/pkg/mod \
     --mount=type=cache,id=kionga-go-build,target=/root/.cache/go-build \
     CGO_ENABLED=0 go build -buildvcs=false -trimpath -ldflags="-s -w" \

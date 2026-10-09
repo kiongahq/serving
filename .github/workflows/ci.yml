@@ -1,0 +1,16 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+
+jobs:
+  go:
+    uses: kiongahq/.github/.github/workflows/go.yml@main
+  image:
+    needs: go
+    uses: kiongahq/.github/.github/workflows/image.yml@main
+    permissions: {contents: read, packages: write}
+    with: {image: serving-manager}
