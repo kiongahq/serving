@@ -5,7 +5,7 @@ package main
 
 import (
 	"encoding/json"
-	"github.com/ml-ai-ops/platform/internal/runtimeconfig"
+	"github.com/kiongahq/platform/internal/runtimeconfig"
 	"log"
 	"net/http"
 	"os"
@@ -13,7 +13,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ml-ai-ops/platform/internal/serving"
+	"github.com/kiongahq/platform/internal/serving"
 )
 
 func main() {
