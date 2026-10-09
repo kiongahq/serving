@@ -1,2 +1,16 @@
 bin/
 *.log
+.env
+.env.*
+!.env.example
+.DS_Store
+.idea/
+.vscode/
+*.swp
+coverage/
+
+# Local coding-assistant state.
+.claude/
+.codex/
+.cursor/
+.aider*
