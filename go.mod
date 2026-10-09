@@ -4,16 +4,16 @@ go 1.25.0
 
 require (
 	github.com/jackc/pgx/v5 v5.9.2
+	github.com/microcosm-cc/bluemonday v1.0.27
 	github.com/robfig/cron/v3 v3.0.1
 	golang.org/x/crypto v0.55.0
+	golang.org/x/image v0.45.0
 )
 
 require (
 	github.com/aymerick/douceur v0.2.0 // indirect
 	github.com/dgryski/go-rendezvous v0.0.0-20200823014737-9f7001d12a5f // indirect
 	github.com/gorilla/css v1.0.1 // indirect
-	github.com/microcosm-cc/bluemonday v1.0.27 // indirect
-	golang.org/x/image v0.45.0 // indirect
 )
 
 require (
