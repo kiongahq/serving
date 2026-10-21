@@ -18,7 +18,9 @@ var SecretNames = []string{"DATABASE_URL", "OIDC_CLIENT_SECRET", "MLAIOPS_INTERN
 var keyPattern = regexp.MustCompile(`^[A-Z][A-Z0-9_]*$`)
 
 func readFile(path string) ([]byte, error) {
-	f, err := os.Open(path)
+	// Paths come from operator-set KIONGA_CONFIG_FILE and *_FILE variables,
+	// never from request input.
+	f, err := os.Open(path) // #nosec G304 G703
 	if err != nil {
 		return nil, err
 	}
