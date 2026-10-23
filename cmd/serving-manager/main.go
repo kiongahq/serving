@@ -4,6 +4,7 @@
 package main
 
 import (
+	"crypto/subtle"
 	"encoding/json"
 	"github.com/kiongahq/serving/internal/runtimeconfig"
 	"log"
@@ -93,9 +94,12 @@ func main() {
 	log.Fatal(server.ListenAndServe())
 }
 
+// authorized fails closed: the manager starts containers through the Docker
+// socket, so without MLAIOPS_INTERNAL_TOKEN it refuses every call.
 func authorized(r *http.Request) bool {
 	token := os.Getenv("MLAIOPS_INTERNAL_TOKEN")
-	return token == "" || strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ") == token
+	bearer, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+	return token != "" && ok && subtle.ConstantTimeCompare([]byte(bearer), []byte(token)) == 1
 }
 
 func write(w http.ResponseWriter, status int, value any) {
