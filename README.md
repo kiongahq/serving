@@ -1,48 +1,72 @@
 # serving
 
-Kionga's model serving manager. When a model version is deployed from the Kionga
-console or API, the [platform](https://github.com/kiongahq/platform) gateway asks this
-service to start an `mlflow models serve` container for it on the platform network
-and records the endpoint it returns. A rejected start is reported back as a failure,
-never as a live endpoint.
+[![CI](https://github.com/kiongahq/serving/actions/workflows/ci.yml/badge.svg)](https://github.com/kiongahq/serving/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENCE)
 
-Part of [Kionga](https://github.com/kiongahq): see the
-[architecture overview](https://github.com/kiongahq#how-the-pieces-connect) and the
-[deploy](https://github.com/kiongahq/deploy) repo for running it with everything else.
+The Kionga model serving manager: runs one model server container per deployed model version.
 
-## API
+## Background
+
+Kionga is a self-hosted platform for machine learning, data and AI agents. When you
+deploy a registered model from the Kionga console or API, the
+[platform](https://github.com/kiongahq/platform) gateway asks this service to start
+an `mlflow models serve` container for that model and records the endpoint it
+returns. If the start fails, the gateway marks the deployment as failed rather than
+live.
+
+The serving manager is the model serving path for single-host installations that
+run on Docker Compose. It controls containers through the Docker socket, which is
+root-equivalent on the host, so run it only on a host you trust. Kubernetes
+installations serve models through KServe instead.
+
+## Install
+
+The image is published as `ghcr.io/kiongahq/serving-manager`. To build from source
+you need Go 1.26:
+
+```bash
+git clone git@github.com:kiongahq/serving.git
+cd serving
+make build          # bin/serving-manager
+```
+
+## Usage
+
+The [deploy](https://github.com/kiongahq/deploy) repository runs the serving
+manager with the rest of Kionga. To run it on its own against the local Docker
+Engine:
+
+```bash
+SERVE_IMAGE=<an image with MLflow> ./bin/serving-manager      # listens on :8085
+
+curl -X POST http://localhost:8085/deployments \
+  -H 'Content-Type: application/json' \
+  -d '{"name": "churn", "artifact_uri": "models:/churn/1"}'
+# {"endpoint":"http://mlaiops-serve-churn:5001","name":"churn"}
+```
 
 | Method | Path | Purpose |
 | --- | --- | --- |
 | `GET` | `/healthz` | Liveness |
-| `GET` | `/deployments` | Running model servers |
-| `POST` | `/deployments` | Start a model server for a model version |
-| `DELETE` | `/deployments/{name}` | Stop and remove one |
+| `GET` | `/deployments` | List model server containers and their state |
+| `POST` | `/deployments` | Start, or replace, the model server for a model |
+| `DELETE` | `/deployments/{name}` | Stop and remove a model server |
 
-Requests other than `/healthz` require `Authorization: Bearer $MLAIOPS_INTERNAL_TOKEN`
-when that variable is set.
+When `MLAIOPS_INTERNAL_TOKEN` is set, every request except `/healthz` must send it
+as a bearer token. The [Configuration reference](https://kiongahq.github.io/docs/reference/configuration/)
+lists every setting.
 
-## Configuration
+## Documentation
 
-| Variable | Default | Purpose |
-| --- | --- | --- |
-| `PORT` | `8085` | Listen port |
-| `SERVE_IMAGE` | `mlaiops-mlflow` | Default model server image (a model can name its own `serving_image`) |
-| `PLATFORM_NETWORK` | `mlaiops_default` | Docker network model servers join |
-| `SERVE_PIDS_LIMIT` | `256` | PID limit per model server container |
-| `DOCKER_SOCKET` / `DOCKER_HOST_URL` / `DOCKER_API_VERSION` | local socket | Docker Engine to use |
-| `MLAIOPS_INTERNAL_TOKEN` | unset | Shared service token |
+- Product documentation: [Models and serving](https://kiongahq.github.io/docs/guides/models-serving/)
+- Engineering handbook: [Execution and serving](https://kiongahq.github.io/docs/engineering/components/execution/)
+- How this repository is laid out: [ARCHITECTURE.md](ARCHITECTURE.md)
 
-The service needs the Docker socket, which is root-equivalent on the host. Run it
-only in the trusted single-host profile; on Kubernetes, serving goes through KServe
-instead (see the platform operator).
+## Contributing
 
-## Develop
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the development setup, the checks CI
+runs and the commit conventions.
 
-```bash
-make verify          # gofmt, vet, race tests, build
-make image           # ghcr.io/kiongahq/serving-manager:dev
-```
+## License
 
-CI publishes `ghcr.io/kiongahq/serving-manager` on pushes to `main` (`latest`,
-`sha-<short>`) and on `v*` tags.
+[MIT](LICENCE) © Kionga contributors
