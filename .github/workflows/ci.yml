@@ -1,9 +1,10 @@
 name: CI
 
 on:
+  release:
+    types: [published]
   push:
     branches: [main]
-    tags: ["v*"]
   pull_request:
 
 permissions:
@@ -11,13 +12,13 @@ permissions:
 
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   go:
     uses: kiongahq/.github/.github/workflows/go.yml@76e4fed230c4f0b89b1bcf884df60e5b2fffca67
   image:
     needs: go
-    uses: kiongahq/.github/.github/workflows/image.yml@76e4fed230c4f0b89b1bcf884df60e5b2fffca67
-    permissions: {contents: read, packages: write}
+    uses: kiongahq/.github/.github/workflows/image.yml@717e2cc3be707aff75c717662c6b3fea58ab56d8
+    permissions: {contents: write, packages: write}
     with: {image: serving-manager}
