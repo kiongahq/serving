@@ -6,11 +6,18 @@ on:
     tags: ["v*"]
   pull_request:
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   go:
-    uses: kiongahq/.github/.github/workflows/go.yml@main
+    uses: kiongahq/.github/.github/workflows/go.yml@76e4fed230c4f0b89b1bcf884df60e5b2fffca67
   image:
     needs: go
-    uses: kiongahq/.github/.github/workflows/image.yml@main
+    uses: kiongahq/.github/.github/workflows/image.yml@76e4fed230c4f0b89b1bcf884df60e5b2fffca67
     permissions: {contents: read, packages: write}
     with: {image: serving-manager}
