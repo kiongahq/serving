@@ -52,9 +52,9 @@ make image                                   # ghcr.io/kiongahq/serving-manager:
 make image IMAGE=serving-manager:local       # another tag
 ```
 
-On pushes to `main` and on `v*` tags, CI builds the image with the shared image
+On pushes to `main` and published releases, CI builds the image with the shared image
 workflow and publishes `ghcr.io/kiongahq/serving-manager` tagged `sha-<short>`,
-`latest` (from `main`) and the semantic version (from tags). Pull requests build the
+`edge` (from `main`); published releases use exact version tags. Pull requests build the
 image without publishing it.
 
 ## Commit messages
@@ -89,3 +89,16 @@ exact finding, so any new secret still fails the scan.
 
 By contributing, you agree that your contributions are licensed under the
 [MIT License](LICENCE).
+
+## Release automation
+
+Configure `RELEASE_PLEASE_TOKEN` with Contents, Issues and Pull requests write
+permissions scoped to the participating repositories. Release PRs require
+independent review and all required checks; no bypass is granted to automation.
+The workflow reports an error until this credential is configured.
+
+Use reviewed `vX.Y.Z` releases, keep published tags and packages immutable, and
+pin container digests in deployments. Development builds use `edge` and SHA
+references; existing `latest` aliases stop updating. The
+[release handbook](https://kiongahq.github.io/docs/engineering/contributing/releases/)
+covers publication, dependency updates and rollback.
