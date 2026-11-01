@@ -9,11 +9,15 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   go:
-    uses: kiongahq/.github/.github/workflows/go.yml@2517a38a78046eaa6f51afc2dc12a33fc4beb4d7
+    uses: kiongahq/.github/.github/workflows/go.yml@76e4fed230c4f0b89b1bcf884df60e5b2fffca67
   image:
     needs: go
-    uses: kiongahq/.github/.github/workflows/image.yml@2517a38a78046eaa6f51afc2dc12a33fc4beb4d7
+    uses: kiongahq/.github/.github/workflows/image.yml@76e4fed230c4f0b89b1bcf884df60e5b2fffca67
     permissions: {contents: read, packages: write}
     with: {image: serving-manager}
