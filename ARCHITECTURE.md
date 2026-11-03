@@ -72,8 +72,10 @@ A two-stage build: a static, stripped binary (`CGO_ENABLED=0`) from
 - **Fail closed.** The manager returns an error when it cannot create or start the
   container, and the gateway then records the deployment as failed. It never
   returns an endpoint for a container that did not start.
-- **Token check.** When `MLAIOPS_INTERNAL_TOKEN` is set, every route except
-  `/healthz` requires it as a bearer token.
+- **Token check.** The manager does not start without `MLAIOPS_INTERNAL_TOKEN`
+  (`runtimeconfig.ValidateServing`, which also enforces token strength in
+  production). Every route except `/healthz` requires `Authorization: Bearer
+  <token>`, compared in constant time.
 - **Single trusted host.** Access to the Docker socket is root-equivalent. The
   manager is the only Kionga service besides the pipeline runner that holds it.
 

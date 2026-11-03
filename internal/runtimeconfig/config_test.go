@@ -110,3 +110,29 @@ func TestProductionWorkspaceDomains(t *testing.T) {
 		t.Fatal("cross-site workspace configuration accepted")
 	}
 }
+
+func TestValidateServingRequiresToken(t *testing.T) {
+	for _, tc := range []struct {
+		environment, token string
+		ok                 bool
+	}{
+		{"", "", false},
+		{"development", "", false},
+		{"", "short", true},
+		{"production", "", false},
+		{"production", "short-token", false},
+		{"production", "kionga-local-service-token", false},
+		{"production", "please-change-me-before-launch", false},
+		{"production", "0123456789abcdefghijklmnopqrstuv", true},
+	} {
+		t.Setenv("KIONGA_ENVIRONMENT", tc.environment)
+		t.Setenv("MLAIOPS_INTERNAL_TOKEN", tc.token)
+		err := ValidateServing()
+		if (err == nil) != tc.ok {
+			t.Errorf("environment %q token %q: err = %v, want ok=%v", tc.environment, tc.token, err, tc.ok)
+		}
+		if err != nil && tc.token != "" && strings.Contains(err.Error(), tc.token) {
+			t.Errorf("error leaks the token: %v", err)
+		}
+	}
+}

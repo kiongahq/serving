@@ -124,3 +124,22 @@ func ValidateGateway() error {
 	}
 	return nil
 }
+
+// ValidateServing checks the serving manager's settings before it listens. The
+// manager drives the Docker socket, which is root-equivalent on the host, so it
+// refuses to start without MLAIOPS_INTERNAL_TOKEN in every environment, and in
+// production it also requires a strong, non-development token.
+func ValidateServing() error {
+	token := os.Getenv("MLAIOPS_INTERNAL_TOKEN")
+	if token == "" {
+		return fmt.Errorf("serving-manager requires MLAIOPS_INTERNAL_TOKEN (or MLAIOPS_INTERNAL_TOKEN_FILE): it controls the Docker socket and never runs unauthenticated")
+	}
+	if os.Getenv("KIONGA_ENVIRONMENT") != "production" {
+		return nil
+	}
+	lower := strings.ToLower(token)
+	if len(token) < 24 || strings.Contains(lower, "local") || strings.Contains(lower, "change-me") {
+		return fmt.Errorf("production MLAIOPS_INTERNAL_TOKEN must be a strong non-development credential of at least 24 characters")
+	}
+	return nil
+}

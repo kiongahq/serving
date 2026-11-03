@@ -37,9 +37,11 @@ manager with the rest of Kionga. To run it on its own against the local Docker
 Engine:
 
 ```bash
+export MLAIOPS_INTERNAL_TOKEN=$(openssl rand -hex 24)
 SERVE_IMAGE=<an image with MLflow> ./bin/serving-manager      # listens on :8085
 
 curl -X POST http://localhost:8085/deployments \
+  -H "Authorization: Bearer $MLAIOPS_INTERNAL_TOKEN" \
   -H 'Content-Type: application/json' \
   -d '{"name": "churn", "artifact_uri": "models:/churn/1"}'
 # {"endpoint":"http://mlaiops-serve-churn:5001","name":"churn"}
@@ -52,8 +54,13 @@ curl -X POST http://localhost:8085/deployments \
 | `POST` | `/deployments` | Start, or replace, the model server for a model |
 | `DELETE` | `/deployments/{name}` | Stop and remove a model server |
 
-When `MLAIOPS_INTERNAL_TOKEN` is set, every request except `/healthz` must send it
-as a bearer token. The [Configuration reference](https://kiongahq.github.io/docs/reference/configuration/)
+`MLAIOPS_INTERNAL_TOKEN` (or `MLAIOPS_INTERNAL_TOKEN_FILE`) is required: the
+manager refuses to start without it, because it drives the root-equivalent Docker
+socket. Every request except `/healthz` must send it as
+`Authorization: Bearer <token>`; the token is compared in constant time and a bare
+token or another scheme is rejected with `401`. With `KIONGA_ENVIRONMENT=production`
+the token must be at least 24 characters and must not be a development value
+(containing `local` or `change-me`). The [Configuration reference](https://kiongahq.github.io/docs/reference/configuration/)
 lists every setting.
 
 ## Documentation
