@@ -49,8 +49,9 @@ delete returns `502`.
 - `APIVersion` optionally pins the Engine API version (`DOCKER_API_VERSION`, for
   example `v1.44`); empty means the daemon's newest.
 
-`manager_test.go` runs every operation against a fake Engine API served by
-`httptest`.
+`manager_test.go` and `image_test.go` run every operation against the stateful
+fake Engine API in `fake_engine_test.go`, served by `httptest`, with an injected
+clock for the polling timeouts.
 
 ### `internal/runtimeconfig`
 
@@ -80,9 +81,13 @@ A two-stage build: a static, stripped binary (`CGO_ENABLED=0`) from
 - **No credentials in model servers.** Model servers run untrusted code. They get
   an empty environment and a read-only artifact volume; only the trusted fetch
   container, with a fixed command, sees store credentials.
-- **Fail closed.** The manager returns an error when it cannot create or start the
-  container, and the gateway then records the deployment as failed. It never
-  returns an endpoint for a container that did not start.
+- **Fail closed, ready before live.** The serving container carries a Docker
+  `Healthcheck` that probes MLflow's `/ping`. `Deploy` polls the container until
+  the engine reports it `healthy`, and fails fast when it exits, restarts or turns
+  `unhealthy`, or when `SERVE_READY_TIMEOUT_SECONDS` (one budget for download and
+  load, default 80, inside the gateway's 90-second call) passes. A failure carries
+  the last 50 log lines and removes the container and volume, so the gateway never
+  records an endpoint that cannot serve.
 - **Token check.** The manager does not start without `MLAIOPS_INTERNAL_TOKEN`
   (`runtimeconfig.ValidateServing`, which also enforces token strength in
   production). Every route except `/healthz` requires `Authorization: Bearer

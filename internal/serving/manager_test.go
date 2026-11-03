@@ -311,3 +311,99 @@ func TestDemuxLogs(t *testing.T) {
 		t.Fatalf("unframed output must pass through, got %q", got)
 	}
 }
+
+// Issue #5: the endpoint is live only once the model answers its health check.
+func TestDeployWaitsForHealthy(t *testing.T) {
+	e, server := newFakeEngine(t)
+	id := servingName + "-id"
+	e.script(id,
+		`{"State":{"Status":"running","Health":{"Status":"starting"}}}`,
+		`{"State":{"Status":"running","Health":{"Status":"starting"}}}`,
+		`{"State":{"Status":"running","Health":{"Status":"healthy"}}}`)
+	manager := testManager(server.URL)
+	sleeps := 0
+	manager.sleep = func(context.Context, time.Duration) error { sleeps++; return nil }
+	endpoint, err := manager.Deploy(context.Background(), "churn", "models:/churn/1", "")
+	if err != nil || endpoint == "" {
+		t.Fatalf("deploy should succeed once healthy: %q %v", endpoint, err)
+	}
+	if e.inspects[id] != 3 {
+		t.Fatalf("deploy returned before the container was healthy: %d inspections", e.inspects[id])
+	}
+	health := e.created[servingName]["Healthcheck"].(map[string]any)
+	test := strings.Join(anyStrings(health["Test"]), " ")
+	if !strings.HasPrefix(test, "CMD python -c ") || !strings.Contains(test, "http://127.0.0.1:5001/ping") || health["StartPeriod"] != float64(DefaultReadyTimeout) {
+		t.Fatalf("create payload must carry an MLflow /ping health check: %#v", health)
+	}
+	if e.removedContains(servingName) {
+		t.Fatalf("a healthy deployment must not be removed after it started: %v", e.removed)
+	}
+}
+
+func TestDeployFailsWhenModelServerIsNotReady(t *testing.T) {
+	for _, tc := range []struct {
+		name, state, want string
+	}{
+		{"unhealthy", `{"State":{"Status":"running","Health":{"Status":"unhealthy"}}}`, "readiness check"},
+		{"exited", `{"State":{"Status":"exited","ExitCode":1,"Health":{"Status":"starting"}}}`, "exited with code 1"},
+		{"restarted", `{"RestartCount":1,"State":{"Status":"running","Health":{"Status":"starting"}}}`, "restarted"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e, server := newFakeEngine(t)
+			id := servingName + "-id"
+			e.script(id, `{"State":{"Status":"running","Health":{"Status":"starting"}}}`, tc.state)
+			e.logs[id] = "ModuleNotFoundError: No module named 'xgboost'"
+			manager := testManager(server.URL)
+			manager.sleep = func(context.Context, time.Duration) error { return nil }
+			endpoint, err := manager.Deploy(context.Background(), "churn", "models:/churn/1", "")
+			if err == nil || endpoint != "" || !strings.Contains(err.Error(), tc.want) || !strings.Contains(err.Error(), "No module named 'xgboost'") {
+				t.Fatalf("expected a %q failure with the log tail, got %q %v", tc.want, endpoint, err)
+			}
+			if !e.called("GET /containers/" + id + "/logs") {
+				t.Fatal("the log tail was not requested")
+			}
+			if countOf(e.calls, "DELETE /containers/"+servingName) < 2 || !e.called("DELETE /volumes/"+servingName+"-model") {
+				t.Fatalf("a model server that never became ready must be removed: %v", e.calls)
+			}
+		})
+	}
+}
+
+func TestReadyTimeoutIsHonoredWithInjectedClock(t *testing.T) {
+	e, server := newFakeEngine(t)
+	id := servingName + "-id"
+	e.script(id, `{"State":{"Status":"running","Health":{"Status":"starting"}}}`)
+	manager := testManager(server.URL)
+	manager.ReadyTimeout = 30 * time.Second
+	clock := time.Unix(0, 0)
+	manager.now = func() time.Time { return clock }
+	manager.sleep = func(_ context.Context, d time.Duration) error { clock = clock.Add(d); return nil }
+	_, err := manager.Deploy(context.Background(), "churn", "models:/churn/1", "")
+	if err == nil || !strings.Contains(err.Error(), "not ready before the deploy timed out") {
+		t.Fatalf("expected a readiness timeout, got %v", err)
+	}
+	if elapsed := clock.Sub(time.Unix(0, 0)); elapsed < 30*time.Second || elapsed > 32*time.Second {
+		t.Fatalf("timeout should stop polling at 30s on the injected clock, stopped at %s", elapsed)
+	}
+}
+
+func countOf(calls []string, key string) int {
+	count := 0
+	for _, call := range calls {
+		if call == key {
+			count++
+		}
+	}
+	return count
+}
+
+func (e *fakeEngine) removedContains(name string) bool {
+	count := 0
+	for _, removed := range e.removed {
+		if removed == name {
+			count++
+		}
+	}
+	// The first removal is the replace step before create.
+	return count > 1
+}

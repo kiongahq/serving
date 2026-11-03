@@ -305,6 +305,7 @@ func (m *Manager) Deploy(ctx context.Context, name, artifactURI, servingImage st
 			"mlaiops.image":    image,
 			"mlaiops.image.id": imageID,
 		},
+		"Healthcheck": m.healthcheck(timeout),
 		"HostConfig": hostConfig(m.Network, pidsLimit, []map[string]any{
 			{"Type": "volume", "Source": volumeName(name), "Target": artifactMount, "ReadOnly": true},
 		}, "unless-stopped"),
@@ -323,6 +324,9 @@ func (m *Manager) Deploy(ctx context.Context, name, artifactURI, servingImage st
 	}
 	if _, err := m.do(ctx, http.MethodPost, "/containers/"+url.PathEscape(created.ID)+"/start", nil, nil); err != nil {
 		return "", fmt.Errorf("start serving container: %w", err)
+	}
+	if err := m.waitReady(ctx, created.ID, deadline); err != nil {
+		return "", err
 	}
 	live = true
 	return fmt.Sprintf("http://%s:%d", containerName(name), m.Port), nil

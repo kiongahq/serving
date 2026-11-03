@@ -11,8 +11,11 @@ Kionga is a self-hosted platform for machine learning, data and AI agents. When 
 deploy a registered model from the Kionga console or API, the
 [platform](https://github.com/kiongahq/platform) gateway asks this service to start
 an `mlflow models serve` container for that model and records the endpoint it
-returns. If the start fails, the gateway marks the deployment as failed rather than
-live.
+returns. The manager returns that endpoint only after the model server passes its
+health check (`GET /ping` inside the container); if the download, start or model
+load fails, or the deploy outlasts `SERVE_READY_TIMEOUT_SECONDS`, it returns `422`
+with the container's last 50 log lines and removes what it created, and the gateway
+marks the deployment as failed rather than live.
 
 The serving manager is the model serving path for single-host installations that
 run on Docker Compose. It controls containers through the Docker socket, which is
@@ -106,7 +109,7 @@ credentials out of every model-serving container.
 | `SERVE_IMAGE_ALLOWED_PREFIXES` | empty | Registries or repositories a request's `serving_image` may use |
 | `SERVE_IMAGE_REQUIRE_DIGEST` | `true` in production, else `false` | Require `@sha256:` digests on request images; production cannot disable it |
 | `SERVE_FETCH_IMAGE` | `SERVE_IMAGE` | Trusted image with MLflow and store support that downloads artifacts |
-| `SERVE_READY_TIMEOUT_SECONDS` | `80` | Time a deploy may take, from download until the model is ready |
+| `SERVE_READY_TIMEOUT_SECONDS` | `80` | Time a deploy may take, from download until the model is ready. Keep it below the gateway's 90-second call to the manager |
 | `MLFLOW_TRACKING_URI`, `MLFLOW_S3_ENDPOINT_URL`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` | unset | Passed to the fetch container only |
 
 ## Documentation

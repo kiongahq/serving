@@ -227,3 +227,47 @@ func (m *Manager) fetchArtifact(ctx context.Context, name, artifactURI string, p
 	}
 	return nil
 }
+
+// healthcheck probes the MLflow scoring server's /ping route from inside the
+// container. Failures during the start period (the whole deploy budget) do not
+// count, so a slow model load is not marked unhealthy; StartInterval makes the
+// engine probe every second while the model loads (ignored by older engines).
+func (m *Manager) healthcheck(startPeriod time.Duration) map[string]any {
+	probe := fmt.Sprintf("import urllib.request; urllib.request.urlopen('http://127.0.0.1:%d/ping', timeout=3)", m.Port)
+	return map[string]any{
+		"Test":          []string{"CMD", "python", "-c", probe},
+		"Interval":      int64(10 * time.Second),
+		"Timeout":       int64(5 * time.Second),
+		"Retries":       3,
+		"StartPeriod":   int64(startPeriod),
+		"StartInterval": int64(time.Second),
+	}
+}
+
+// waitReady returns once the engine reports the serving container healthy. It
+// fails fast when the container exits, restarts or turns unhealthy, and when
+// the deadline passes; every failure carries the container's last log lines.
+func (m *Manager) waitReady(ctx context.Context, id string, deadline time.Time) error {
+	err := m.waitFor(ctx, id, deadline, func(state containerState) (bool, error) {
+		switch {
+		case state.State.Status == "exited" || state.State.Status == "dead":
+			return true, fmt.Errorf("model server exited with code %d before it was ready", state.State.ExitCode)
+		case state.RestartCount > 0 || state.State.Status == "restarting":
+			return true, errors.New("model server crashed and restarted before it was ready")
+		case state.State.Health == nil:
+			return false, nil
+		case state.State.Health.Status == "healthy":
+			return true, nil
+		case state.State.Health.Status == "unhealthy":
+			return true, errors.New("model server failed its readiness check")
+		}
+		return false, nil
+	})
+	if errors.Is(err, errTimeout) {
+		err = errors.New("model server was not ready before the deploy timed out (SERVE_READY_TIMEOUT_SECONDS)")
+	}
+	if err != nil {
+		return withLogs(err, m.logTail(context.WithoutCancel(ctx), id))
+	}
+	return nil
+}
