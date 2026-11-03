@@ -39,8 +39,8 @@ func TestDeployCreatesAndStartsContainer(t *testing.T) {
 		t.Fatalf("expected replace->create->start sequence, got %v", e.calls)
 	}
 	payload := e.created[servingName]
-	if payload["Image"] != "mlaiops-mlflow" {
-		t.Fatalf("configured default image was not used: %#v", payload["Image"])
+	if payload["Image"] != e.images["mlaiops-mlflow"] {
+		t.Fatalf("configured default image was not used by ID: %#v", payload["Image"])
 	}
 	cmd := strings.Join(anyStrings(payload["Cmd"]), " ")
 	if !strings.HasPrefix(cmd, "mlflow models serve -m "+modelPath+" ") {
@@ -60,18 +60,20 @@ func TestDeployCreatesAndStartsContainer(t *testing.T) {
 
 func TestDeployUsesModelSpecificServingImage(t *testing.T) {
 	e, server := newFakeEngine(t)
+	e.images["ghcr.io/acme/churn-xgboost:3"] = "sha256:" + strings.Repeat("b", 64)
 	manager := testManager(server.URL)
+	manager.Images.AllowedPrefixes = []string{"ghcr.io/acme/"}
 	manager.PidsLimit = maximumPidsLimit + 1
 	if _, err := manager.Deploy(context.Background(), "churn", "models:/churn-classifier/3", " ghcr.io/acme/churn-xgboost:3 "); err != nil {
 		t.Fatal(err)
 	}
 	payload := e.created[servingName]
-	if payload["Image"] != "ghcr.io/acme/churn-xgboost:3" {
-		t.Fatalf("model-specific image was not selected: %#v", payload["Image"])
+	if payload["Image"] != e.images["ghcr.io/acme/churn-xgboost:3"] {
+		t.Fatalf("model-specific image was not selected by ID: %#v", payload["Image"])
 	}
 	labels := payload["Labels"].(map[string]any)
-	if labels["mlaiops.image"] != "ghcr.io/acme/churn-xgboost:3" {
-		t.Fatalf("selected image was not recorded in labels: %#v", labels)
+	if labels["mlaiops.image"] != "ghcr.io/acme/churn-xgboost:3" || labels["mlaiops.image.id"] != e.images["ghcr.io/acme/churn-xgboost:3"] {
+		t.Fatalf("selected image and its resolved ID were not recorded in labels: %#v", labels)
 	}
 	host := payload["HostConfig"].(map[string]any)
 	if host["PidsLimit"] != float64(maximumPidsLimit) {

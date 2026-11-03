@@ -81,6 +81,19 @@ credentials out of every model-serving container.
   `/opt/kionga/artifact`, serves `/opt/kionga/artifact/model`, and starts with an
   empty environment, so it cannot read the object store or the tracking server
   with platform credentials, and `docker inspect` on it shows no secret.
+- **Image allowlist.** A request may pick a model-specific `serving_image` only
+  from repositories in `SERVE_IMAGE_ALLOWED_PREFIXES`, a comma-separated list. An
+  entry ending in `/` allows everything below it (`ghcr.io/acme/`,
+  `registry.internal:5000/`); any other entry allows exactly one repository
+  (`ghcr.io/acme/churn`). Docker Hub names are normalised, so `python` means
+  `docker.io/library/python`. The list is empty by default: only the configured
+  `SERVE_IMAGE` runs, which keeps the standard `mlaiops-mlflow` image working. A
+  rejected image gets `422` and never reaches the engine.
+- **Pinned digests.** With `KIONGA_ENVIRONMENT=production`, or
+  `SERVE_IMAGE_REQUIRE_DIGEST=true` elsewhere, a request image must be pinned as
+  `name@sha256:<digest>`. Every deploy resolves the image to its content-addressed
+  ID, runs that ID, and records it in the `mlaiops.image.id` label next to the
+  requested reference in `mlaiops.image`. A missing image fails the deploy.
 - **What operators configure.** Give the manager store credentials that can only
   read model artifacts (for example an object-store user with read-only access to
   the `mlaiops-artifacts` and `mlaiops-models` buckets), not the store's root user.
@@ -90,6 +103,8 @@ credentials out of every model-serving container.
 | --- | --- | --- |
 | `MLAIOPS_INTERNAL_TOKEN` | required | Bearer token for every route except `/healthz` |
 | `SERVE_IMAGE` | `mlaiops-mlflow` | Default model server image, trusted operator configuration |
+| `SERVE_IMAGE_ALLOWED_PREFIXES` | empty | Registries or repositories a request's `serving_image` may use |
+| `SERVE_IMAGE_REQUIRE_DIGEST` | `true` in production, else `false` | Require `@sha256:` digests on request images; production cannot disable it |
 | `SERVE_FETCH_IMAGE` | `SERVE_IMAGE` | Trusted image with MLflow and store support that downloads artifacts |
 | `SERVE_READY_TIMEOUT_SECONDS` | `80` | Time a deploy may take, from download until the model is ready |
 | `MLFLOW_TRACKING_URI`, `MLFLOW_S3_ENDPOINT_URL`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` | unset | Passed to the fetch container only |

@@ -6,6 +6,7 @@ package main
 import (
 	"crypto/subtle"
 	"encoding/json"
+	"fmt"
 	"github.com/kiongahq/serving/internal/runtimeconfig"
 	"log"
 	"net/http"
@@ -34,6 +35,11 @@ func main() {
 	// container; model-serving containers never receive them.
 	manager := serving.NewManager(getenv("SERVE_IMAGE", "mlaiops-mlflow"), getenv("PLATFORM_NETWORK", "mlaiops_default"), env)
 	manager.FetchImage = os.Getenv("SERVE_FETCH_IMAGE")
+	policy, err := imagePolicy()
+	if err != nil {
+		log.Fatal(err)
+	}
+	manager.Images = policy
 	manager.PidsLimit = getenvInt64("SERVE_PIDS_LIMIT", manager.PidsLimit)
 	manager.ReadyTimeout = time.Duration(getenvInt64("SERVE_READY_TIMEOUT_SECONDS", int64(serving.DefaultReadyTimeout/time.Second))) * time.Second
 	if socket := os.Getenv("DOCKER_SOCKET"); socket != "" {
@@ -97,7 +103,7 @@ func main() {
 	})
 
 	server := &http.Server{Addr: ":" + getenv("PORT", "8085"), Handler: mux, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 30 * time.Second, WriteTimeout: manager.ReadyTimeout + 40*time.Second, IdleTimeout: 60 * time.Second}
-	log.Printf("serving-manager listening on %s (image=%s network=%s)", server.Addr, manager.Image, manager.Network)
+	log.Printf("serving-manager listening on %s (image=%s network=%s allowed_images=%v require_digest=%t)", server.Addr, manager.Image, manager.Network, manager.Images.AllowedPrefixes, manager.Images.RequireDigest)
 	log.Fatal(server.ListenAndServe())
 }
 
@@ -107,6 +113,28 @@ func authorized(r *http.Request) bool {
 	token := os.Getenv("MLAIOPS_INTERNAL_TOKEN")
 	bearer, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
 	return token != "" && ok && subtle.ConstantTimeCompare([]byte(bearer), []byte(token)) == 1
+}
+
+// imagePolicy reads SERVE_IMAGE_ALLOWED_PREFIXES and SERVE_IMAGE_REQUIRE_DIGEST.
+// Production always requires digest-pinned request images.
+func imagePolicy() (serving.ImagePolicy, error) {
+	prefixes, err := serving.ParseAllowedPrefixes(os.Getenv("SERVE_IMAGE_ALLOWED_PREFIXES"))
+	if err != nil {
+		return serving.ImagePolicy{}, err
+	}
+	production := os.Getenv("KIONGA_ENVIRONMENT") == "production"
+	requireDigest := production
+	if value := strings.TrimSpace(os.Getenv("SERVE_IMAGE_REQUIRE_DIGEST")); value != "" {
+		parsed, err := strconv.ParseBool(value)
+		if err != nil {
+			return serving.ImagePolicy{}, fmt.Errorf("SERVE_IMAGE_REQUIRE_DIGEST must be true or false")
+		}
+		if production && !parsed {
+			return serving.ImagePolicy{}, fmt.Errorf("production requires digest-pinned serving images; remove SERVE_IMAGE_REQUIRE_DIGEST=false")
+		}
+		requireDigest = parsed
+	}
+	return serving.ImagePolicy{AllowedPrefixes: prefixes, RequireDigest: requireDigest}, nil
 }
 
 func write(w http.ResponseWriter, status int, value any) {

@@ -74,6 +74,9 @@ A two-stage build: a static, stripped binary (`CGO_ENABLED=0`) from
   capped at `4096`) and restart policy `unless-stopped`.
 - **Replace, never duplicate.** Deploying a name that already runs replaces it. This
   makes re-deploy and rollback idempotent.
+- **Allowlisted, pinned images.** A request's `serving_image` must match
+  `SERVE_IMAGE_ALLOWED_PREFIXES` (`image.go`) and, in production, carry a digest.
+  The container always runs the resolved image ID, recorded in `mlaiops.image.id`.
 - **No credentials in model servers.** Model servers run untrusted code. They get
   an empty environment and a read-only artifact volume; only the trusted fetch
   container, with a fixed command, sees store credentials.

@@ -56,6 +56,8 @@ type Manager struct {
 	// PidsLimit bounds processes and threads in each untrusted serving container.
 	PidsLimit int64
 
+	// Images restricts the serving_image a request may choose.
+	Images ImagePolicy
 	// ReadyTimeout bounds a whole deploy, from the artifact download until the
 	// model is ready to serve. Zero uses DefaultReadyTimeout.
 	ReadyTimeout time.Duration
@@ -239,14 +241,22 @@ func (m *Manager) Deploy(ctx context.Context, name, artifactURI, servingImage st
 	if err != nil {
 		return "", err
 	}
-	if image == "" {
-		image, err = normalizeImage(m.Image)
-		if err != nil {
+	configured, err := normalizeImage(m.Image)
+	if err != nil {
+		return "", err
+	}
+	if image != "" {
+		if err := m.Images.check(image, configured); err != nil {
 			return "", err
 		}
+	} else {
+		image = configured
 	}
 	if image == "" {
 		return "", errors.New("serving image is not configured")
+	}
+	if _, err := parseReference(image); err != nil {
+		return "", err
 	}
 	pidsLimit := m.PidsLimit
 	if pidsLimit <= 0 {
@@ -268,13 +278,18 @@ func (m *Manager) Deploy(ctx context.Context, name, artifactURI, servingImage st
 		timeout = DefaultReadyTimeout
 	}
 	deadline := m.clock().Add(timeout)
+	// Pin the exact image that passed the policy, so a moved tag cannot swap it.
+	imageID, err := m.resolveImage(ctx, image)
+	if err != nil {
+		return "", err
+	}
 	if err := m.fetchArtifact(ctx, name, artifactURI, pidsLimit, deadline); err != nil {
 		return "", err
 	}
 	// The serving container runs untrusted model code: it gets the artifact as a
 	// read-only volume and no environment, so no store or tracking credentials.
 	create := map[string]any{
-		"Image": image,
+		"Image": imageID,
 		"Cmd": []string{
 			"mlflow", "models", "serve",
 			"-m", modelPath,
@@ -288,6 +303,7 @@ func (m *Manager) Deploy(ctx context.Context, name, artifactURI, servingImage st
 			"mlaiops.model":    name,
 			"mlaiops.artifact": artifactURI,
 			"mlaiops.image":    image,
+			"mlaiops.image.id": imageID,
 		},
 		"HostConfig": hostConfig(m.Network, pidsLimit, []map[string]any{
 			{"Type": "volume", "Source": volumeName(name), "Target": artifactMount, "ReadOnly": true},

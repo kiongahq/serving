@@ -58,3 +58,31 @@ func TestMainRefusesToStartWithoutToken(t *testing.T) {
 		t.Fatalf("missing a clear startup error: %s", output)
 	}
 }
+
+func TestImagePolicyFromEnvironment(t *testing.T) {
+	t.Setenv("KIONGA_ENVIRONMENT", "")
+	t.Setenv("SERVE_IMAGE_ALLOWED_PREFIXES", "ghcr.io/kiongahq/")
+	t.Setenv("SERVE_IMAGE_REQUIRE_DIGEST", "")
+	policy, err := imagePolicy()
+	if err != nil || policy.RequireDigest || strings.Join(policy.AllowedPrefixes, ",") != "ghcr.io/kiongahq/" {
+		t.Fatalf("unexpected development policy %+v %v", policy, err)
+	}
+	t.Setenv("KIONGA_ENVIRONMENT", "production")
+	if policy, err = imagePolicy(); err != nil || !policy.RequireDigest {
+		t.Fatalf("production must require digests: %+v %v", policy, err)
+	}
+	t.Setenv("SERVE_IMAGE_REQUIRE_DIGEST", "false")
+	if _, err = imagePolicy(); err == nil {
+		t.Fatal("production must refuse SERVE_IMAGE_REQUIRE_DIGEST=false")
+	}
+	t.Setenv("KIONGA_ENVIRONMENT", "")
+	t.Setenv("SERVE_IMAGE_REQUIRE_DIGEST", "maybe")
+	if _, err = imagePolicy(); err == nil {
+		t.Fatal("an invalid boolean must be rejected")
+	}
+	t.Setenv("SERVE_IMAGE_REQUIRE_DIGEST", "")
+	t.Setenv("SERVE_IMAGE_ALLOWED_PREFIXES", "https://evil/")
+	if _, err = imagePolicy(); err == nil {
+		t.Fatal("an invalid allowlist must be rejected")
+	}
+}
