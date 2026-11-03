@@ -30,8 +30,12 @@ func main() {
 			env = append(env, key+"="+value)
 		}
 	}
+	// The store and tracking credentials go only to the trusted artifact fetch
+	// container; model-serving containers never receive them.
 	manager := serving.NewManager(getenv("SERVE_IMAGE", "mlaiops-mlflow"), getenv("PLATFORM_NETWORK", "mlaiops_default"), env)
+	manager.FetchImage = os.Getenv("SERVE_FETCH_IMAGE")
 	manager.PidsLimit = getenvInt64("SERVE_PIDS_LIMIT", manager.PidsLimit)
+	manager.ReadyTimeout = time.Duration(getenvInt64("SERVE_READY_TIMEOUT_SECONDS", int64(serving.DefaultReadyTimeout/time.Second))) * time.Second
 	if socket := os.Getenv("DOCKER_SOCKET"); socket != "" {
 		manager.SocketPath = socket
 	}
@@ -92,7 +96,7 @@ func main() {
 		w.WriteHeader(http.StatusNoContent)
 	})
 
-	server := &http.Server{Addr: ":" + getenv("PORT", "8085"), Handler: mux, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 30 * time.Second, WriteTimeout: 120 * time.Second, IdleTimeout: 60 * time.Second}
+	server := &http.Server{Addr: ":" + getenv("PORT", "8085"), Handler: mux, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 30 * time.Second, WriteTimeout: manager.ReadyTimeout + 40*time.Second, IdleTimeout: 60 * time.Second}
 	log.Printf("serving-manager listening on %s (image=%s network=%s)", server.Addr, manager.Image, manager.Network)
 	log.Fatal(server.ListenAndServe())
 }

@@ -63,6 +63,37 @@ the token must be at least 24 characters and must not be a development value
 (containing `local` or `change-me`). The [Configuration reference](https://kiongahq.github.io/docs/reference/configuration/)
 lists every setting.
 
+## Security model
+
+Model servers run untrusted code: loading an MLflow pyfunc or pickle model executes
+Python chosen by the model's author. The manager therefore keeps platform
+credentials out of every model-serving container.
+
+- **Artifact pre-fetch.** For each deploy the manager creates a Docker volume
+  (`mlaiops-serve-<name>-model`) and runs a short-lived fetch container from the
+  operator's trusted image (`SERVE_FETCH_IMAGE`, default `SERVE_IMAGE`) with a
+  fixed command that downloads the artifact with MLflow's resolver. That download
+  only copies files; it never imports the model. The fetch container is the only
+  container that receives `MLFLOW_TRACKING_URI`, `MLFLOW_S3_ENDPOINT_URL`,
+  `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`, and it is removed as soon as
+  the download finishes or fails. A request's `serving_image` never runs this step.
+- **Credential-free serving.** The model server mounts the volume read-only at
+  `/opt/kionga/artifact`, serves `/opt/kionga/artifact/model`, and starts with an
+  empty environment, so it cannot read the object store or the tracking server
+  with platform credentials, and `docker inspect` on it shows no secret.
+- **What operators configure.** Give the manager store credentials that can only
+  read model artifacts (for example an object-store user with read-only access to
+  the `mlaiops-artifacts` and `mlaiops-models` buckets), not the store's root user.
+  They are visible to anyone with Docker access while a fetch container runs.
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `MLAIOPS_INTERNAL_TOKEN` | required | Bearer token for every route except `/healthz` |
+| `SERVE_IMAGE` | `mlaiops-mlflow` | Default model server image, trusted operator configuration |
+| `SERVE_FETCH_IMAGE` | `SERVE_IMAGE` | Trusted image with MLflow and store support that downloads artifacts |
+| `SERVE_READY_TIMEOUT_SECONDS` | `80` | Time a deploy may take, from download until the model is ready |
+| `MLFLOW_TRACKING_URI`, `MLFLOW_S3_ENDPOINT_URL`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` | unset | Passed to the fetch container only |
+
 ## Documentation
 
 - Product documentation: [Models and serving](https://kiongahq.github.io/docs/guides/models-serving/)

@@ -23,6 +23,9 @@ import (
 const (
 	defaultPidsLimit int64 = 256
 	maximumPidsLimit int64 = 4096
+	// DefaultReadyTimeout keeps a deploy inside the platform gateway's 90-second
+	// call to the manager.
+	DefaultReadyTimeout = 80 * time.Second
 )
 
 type Manager struct {
@@ -35,19 +38,32 @@ type Manager struct {
 	// SocketPath for unix transport when BaseURL is empty.
 	SocketPath string
 	// Image is the fallback for deployments that do not register a model-specific
-	// serving image. It must contain MLflow, artifact-store support, and the model's
-	// framework dependencies.
+	// serving image. It must contain MLflow and the model's framework
+	// dependencies.
 	Image string
+	// FetchImage runs the trusted artifact download step. It must contain MLflow
+	// with artifact-store support. Empty uses Image. A request's serving_image is
+	// never used here, because this container holds the store credentials.
+	FetchImage string
 	// Network the container joins so the gateway can reach it by name.
 	Network string
-	// Env passed to every serving container (MLflow tracking + S3 credentials).
-	Env []string
+	// FetchEnv holds the MLflow tracking and object-store credentials. It is
+	// passed only to the short-lived fetch container that runs FetchImage with a
+	// fixed command; model-serving containers never receive it.
+	FetchEnv []string
 	// Port the model server listens on inside the container.
 	Port int
 	// PidsLimit bounds processes and threads in each untrusted serving container.
 	PidsLimit int64
 
+	// ReadyTimeout bounds a whole deploy, from the artifact download until the
+	// model is ready to serve. Zero uses DefaultReadyTimeout.
+	ReadyTimeout time.Duration
+
 	client *http.Client
+	// now and sleep are replaced by tests to drive polling deterministically.
+	now   func() time.Time
+	sleep func(context.Context, time.Duration) error
 }
 
 type Deployment struct {
@@ -58,8 +74,10 @@ type Deployment struct {
 	State        string `json:"state"`
 }
 
-func NewManager(image, network string, env []string) *Manager {
-	return &Manager{SocketPath: "/var/run/docker.sock", Image: image, Network: network, Env: env, Port: 5001, PidsLimit: defaultPidsLimit}
+// NewManager returns a manager that serves with image on network. fetchEnv is
+// the credential environment for the trusted artifact fetch step only.
+func NewManager(image, network string, fetchEnv []string) *Manager {
+	return &Manager{SocketPath: "/var/run/docker.sock", Image: image, Network: network, FetchEnv: fetchEnv, Port: 5001, PidsLimit: defaultPidsLimit}
 }
 
 func (m *Manager) httpClient() *http.Client {
@@ -100,6 +118,21 @@ func (e *EngineError) Is(target error) bool {
 }
 
 func (m *Manager) do(ctx context.Context, method, path string, input any, output any) (int, error) {
+	status, raw, err := m.doRaw(ctx, method, path, input)
+	if err != nil {
+		return status, err
+	}
+	if output != nil && len(raw) > 0 && status < 300 {
+		if err := json.Unmarshal(raw, output); err != nil {
+			return status, err
+		}
+	}
+	return status, nil
+}
+
+// doRaw sends one Engine API call and returns the status and up to 1 MiB of the
+// response body. Any status of 400 or above is an *EngineError.
+func (m *Manager) doRaw(ctx context.Context, method, path string, input any) (int, []byte, error) {
 	base := m.BaseURL
 	if base == "" {
 		base = "http://docker"
@@ -111,32 +144,27 @@ func (m *Manager) do(ctx context.Context, method, path string, input any, output
 	if input != nil {
 		raw, err := json.Marshal(input)
 		if err != nil {
-			return 0, err
+			return 0, nil, err
 		}
 		body = bytes.NewReader(raw)
 	}
 	request, err := http.NewRequestWithContext(ctx, method, base+path, body)
 	if err != nil {
-		return 0, err
+		return 0, nil, err
 	}
 	if input != nil {
 		request.Header.Set("Content-Type", "application/json")
 	}
 	response, err := m.httpClient().Do(request)
 	if err != nil {
-		return 0, fmt.Errorf("docker engine unreachable: %w", err)
+		return 0, nil, fmt.Errorf("docker engine unreachable: %w", err)
 	}
 	defer func() { _ = response.Body.Close() }()
 	raw, _ := io.ReadAll(io.LimitReader(response.Body, 1<<20))
 	if response.StatusCode >= 400 {
-		return response.StatusCode, &EngineError{Status: response.StatusCode, Body: strings.TrimSpace(string(raw))}
+		return response.StatusCode, raw, &EngineError{Status: response.StatusCode, Body: strings.TrimSpace(string(raw))}
 	}
-	if output != nil && len(raw) > 0 && response.StatusCode < 300 {
-		if err := json.Unmarshal(raw, output); err != nil {
-			return response.StatusCode, err
-		}
-	}
-	return response.StatusCode, nil
+	return response.StatusCode, raw, nil
 }
 
 const containerPrefix = "mlaiops-serve-"
@@ -228,29 +256,42 @@ func (m *Manager) Deploy(ctx context.Context, name, artifactURI, servingImage st
 		pidsLimit = maximumPidsLimit
 	}
 	_ = m.Undeploy(ctx, name)
+	// A deploy that does not reach a live endpoint leaves nothing behind.
+	live := false
+	defer func() {
+		if !live {
+			_ = m.Undeploy(context.WithoutCancel(ctx), name)
+		}
+	}()
+	timeout := m.ReadyTimeout
+	if timeout <= 0 {
+		timeout = DefaultReadyTimeout
+	}
+	deadline := m.clock().Add(timeout)
+	if err := m.fetchArtifact(ctx, name, artifactURI, pidsLimit, deadline); err != nil {
+		return "", err
+	}
+	// The serving container runs untrusted model code: it gets the artifact as a
+	// read-only volume and no environment, so no store or tracking credentials.
 	create := map[string]any{
 		"Image": image,
 		"Cmd": []string{
 			"mlflow", "models", "serve",
-			"-m", artifactURI,
+			"-m", modelPath,
 			"-h", "0.0.0.0",
 			"-p", fmt.Sprintf("%d", m.Port),
 			"--env-manager", "local",
 		},
-		"Env": m.Env,
+		"Env": []string{},
 		"Labels": map[string]string{
 			"mlaiops.serving":  "true",
 			"mlaiops.model":    name,
 			"mlaiops.artifact": artifactURI,
 			"mlaiops.image":    image,
 		},
-		"HostConfig": map[string]any{
-			"NetworkMode":   m.Network,
-			"RestartPolicy": map[string]any{"Name": "unless-stopped"},
-			"CapDrop":       []string{"ALL"},
-			"SecurityOpt":   []string{"no-new-privileges"},
-			"PidsLimit":     pidsLimit,
-		},
+		"HostConfig": hostConfig(m.Network, pidsLimit, []map[string]any{
+			{"Type": "volume", "Source": volumeName(name), "Target": artifactMount, "ReadOnly": true},
+		}, "unless-stopped"),
 	}
 	var created struct {
 		ID string `json:"Id"`
@@ -265,16 +306,23 @@ func (m *Manager) Deploy(ctx context.Context, name, artifactURI, servingImage st
 		return "", errors.New("docker engine created a container without an ID")
 	}
 	if _, err := m.do(ctx, http.MethodPost, "/containers/"+url.PathEscape(created.ID)+"/start", nil, nil); err != nil {
-		_ = m.Undeploy(ctx, name)
 		return "", fmt.Errorf("start serving container: %w", err)
 	}
+	live = true
 	return fmt.Sprintf("http://%s:%d", containerName(name), m.Port), nil
 }
 
-// Undeploy stops and removes the deployment container. Missing containers are
-// not an error.
+// Undeploy stops and removes the deployment container, any leftover artifact
+// fetch container and the model artifact volume. Missing resources are not an
+// error.
 func (m *Manager) Undeploy(ctx context.Context, name string) error {
-	_, err := m.do(ctx, http.MethodDelete, "/containers/"+url.PathEscape(containerName(name))+"?force=true", nil, nil)
+	if err := m.removeContainer(ctx, containerName(name)); err != nil {
+		return err
+	}
+	if err := m.removeContainer(ctx, fetchContainerName(name)); err != nil {
+		return err
+	}
+	_, err := m.do(ctx, http.MethodDelete, "/volumes/"+url.PathEscape(volumeName(name))+"?force=true", nil, nil)
 	if errors.Is(err, ErrNotFound) {
 		return nil
 	}
