@@ -3,6 +3,7 @@ package serving
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"regexp"
@@ -162,5 +163,93 @@ func TestUndeployMissingContainerIsNoError(t *testing.T) {
 	defer docker.Close()
 	if err := testManager(docker.URL).Undeploy(context.Background(), "ghost"); err != nil {
 		t.Fatalf("missing container must not error: %v", err)
+	}
+}
+
+// engine serves scripted Docker Engine responses keyed by "METHOD /path" and
+// records every call. Unscripted calls fail the test.
+type engine struct {
+	t      *testing.T
+	routes map[string]func(w http.ResponseWriter, r *http.Request)
+	calls  []string
+}
+
+func newEngine(t *testing.T) (*engine, *httptest.Server) {
+	e := &engine{t: t, routes: map[string]func(http.ResponseWriter, *http.Request){}}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		key := r.Method + " " + r.URL.Path
+		e.calls = append(e.calls, key)
+		if handler, ok := e.routes[key]; ok {
+			handler(w, r)
+			return
+		}
+		t.Errorf("unexpected docker call %s", key)
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	t.Cleanup(server.Close)
+	return e, server
+}
+
+func (e *engine) on(key string, status int, body string) {
+	e.routes[key] = func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(status)
+		_, _ = w.Write([]byte(body))
+	}
+}
+
+func (e *engine) called(key string) bool {
+	for _, call := range e.calls {
+		if call == key {
+			return true
+		}
+	}
+	return false
+}
+
+func TestDeployFailsWhenCreateReturnsNotFound(t *testing.T) {
+	e, server := newEngine(t)
+	e.on("DELETE /containers/mlaiops-serve-churn", http.StatusNotFound, `{"message":"No such container"}`)
+	e.on("POST /containers/create", http.StatusNotFound, `{"message":"No such image: mlaiops-mlflow:latest"}`)
+	endpoint, err := testManager(server.URL).Deploy(context.Background(), "churn", "models:/churn/1", "")
+	if err == nil || endpoint != "" {
+		t.Fatalf("missing image must fail the deploy, got endpoint %q err %v", endpoint, err)
+	}
+	if !strings.Contains(err.Error(), "not present") || !errors.Is(err, ErrNotFound) {
+		t.Fatalf("error should name the missing image: %v", err)
+	}
+	for _, call := range e.calls {
+		if strings.HasSuffix(call, "/start") {
+			t.Fatalf("start must not be called after a failed create: %v", e.calls)
+		}
+	}
+}
+
+func TestDeployFailsWhenStartReturnsNotFound(t *testing.T) {
+	e, server := newEngine(t)
+	e.on("DELETE /containers/mlaiops-serve-churn", http.StatusNotFound, ``)
+	e.on("POST /containers/create", http.StatusCreated, `{"Id":"ctr-1"}`)
+	e.on("POST /containers/ctr-1/start", http.StatusNotFound, `{"message":"No such container: ctr-1"}`)
+	if endpoint, err := testManager(server.URL).Deploy(context.Background(), "churn", "models:/churn/1", ""); err == nil || endpoint != "" {
+		t.Fatalf("404 on start must fail the deploy, got endpoint %q err %v", endpoint, err)
+	}
+}
+
+func TestDeployRejectsEmptyContainerID(t *testing.T) {
+	e, server := newEngine(t)
+	e.on("DELETE /containers/mlaiops-serve-churn", http.StatusNotFound, ``)
+	e.on("POST /containers/create", http.StatusCreated, `{}`)
+	if _, err := testManager(server.URL).Deploy(context.Background(), "churn", "models:/churn/1", ""); err == nil {
+		t.Fatal("an empty container ID must fail the deploy")
+	}
+	if e.called("POST /containers//start") {
+		t.Fatal("start must not be called with an empty ID")
+	}
+}
+
+func TestListFailsWhenEngineReturnsNotFound(t *testing.T) {
+	e, server := newEngine(t)
+	e.on("GET /containers/json", http.StatusNotFound, `page not found`)
+	if _, err := testManager(server.URL).List(context.Background()); err == nil {
+		t.Fatal("List must report a 404 as an error")
 	}
 }

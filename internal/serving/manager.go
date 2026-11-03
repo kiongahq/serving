@@ -80,6 +80,25 @@ func (m *Manager) httpClient() *http.Client {
 	return m.client
 }
 
+// ErrNotFound reports a Docker Engine 404: a missing image, container or
+// volume. Only callers for which absence is success (Undeploy) may ignore it.
+var ErrNotFound = errors.New("not found on the docker engine")
+
+// EngineError is a Docker Engine response with an error status.
+type EngineError struct {
+	Status int
+	Body   string
+}
+
+func (e *EngineError) Error() string {
+	return fmt.Sprintf("docker engine returned %d %s: %s", e.Status, http.StatusText(e.Status), e.Body)
+}
+
+// Is makes errors.Is(err, ErrNotFound) true for a 404.
+func (e *EngineError) Is(target error) bool {
+	return target == ErrNotFound && e.Status == http.StatusNotFound
+}
+
 func (m *Manager) do(ctx context.Context, method, path string, input any, output any) (int, error) {
 	base := m.BaseURL
 	if base == "" {
@@ -109,8 +128,8 @@ func (m *Manager) do(ctx context.Context, method, path string, input any, output
 	}
 	defer func() { _ = response.Body.Close() }()
 	raw, _ := io.ReadAll(io.LimitReader(response.Body, 1<<20))
-	if response.StatusCode >= 400 && response.StatusCode != http.StatusNotFound {
-		return response.StatusCode, fmt.Errorf("docker engine returned %s: %s", response.Status, strings.TrimSpace(string(raw)))
+	if response.StatusCode >= 400 {
+		return response.StatusCode, &EngineError{Status: response.StatusCode, Body: strings.TrimSpace(string(raw))}
 	}
 	if output != nil && len(raw) > 0 && response.StatusCode < 300 {
 		if err := json.Unmarshal(raw, output); err != nil {
@@ -237,10 +256,17 @@ func (m *Manager) Deploy(ctx context.Context, name, artifactURI, servingImage st
 		ID string `json:"Id"`
 	}
 	if _, err := m.do(ctx, http.MethodPost, "/containers/create?name="+url.QueryEscape(containerName(name)), create, &created); err != nil {
-		return "", err
+		if errors.Is(err, ErrNotFound) {
+			return "", fmt.Errorf("serving image %q is not present on the docker engine: %w", image, err)
+		}
+		return "", fmt.Errorf("create serving container: %w", err)
 	}
-	if _, err := m.do(ctx, http.MethodPost, "/containers/"+created.ID+"/start", nil, nil); err != nil {
-		return "", err
+	if strings.TrimSpace(created.ID) == "" {
+		return "", errors.New("docker engine created a container without an ID")
+	}
+	if _, err := m.do(ctx, http.MethodPost, "/containers/"+url.PathEscape(created.ID)+"/start", nil, nil); err != nil {
+		_ = m.Undeploy(ctx, name)
+		return "", fmt.Errorf("start serving container: %w", err)
 	}
 	return fmt.Sprintf("http://%s:%d", containerName(name), m.Port), nil
 }
@@ -248,8 +274,8 @@ func (m *Manager) Deploy(ctx context.Context, name, artifactURI, servingImage st
 // Undeploy stops and removes the deployment container. Missing containers are
 // not an error.
 func (m *Manager) Undeploy(ctx context.Context, name string) error {
-	status, err := m.do(ctx, http.MethodDelete, "/containers/"+url.PathEscape(containerName(name))+"?force=true", nil, nil)
-	if status == http.StatusNotFound {
+	_, err := m.do(ctx, http.MethodDelete, "/containers/"+url.PathEscape(containerName(name))+"?force=true", nil, nil)
+	if errors.Is(err, ErrNotFound) {
 		return nil
 	}
 	return err
