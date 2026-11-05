@@ -2,94 +2,172 @@ package serving
 
 import (
 	"context"
-	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 )
 
-func fakeDocker(t *testing.T) (*httptest.Server, *[]string, *map[string]any) {
-	t.Helper()
-	var calls []string
-	var createPayload map[string]any
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		calls = append(calls, r.Method+" "+r.URL.Path)
-		switch {
-		case r.Method == http.MethodDelete && strings.HasPrefix(r.URL.Path, "/containers/"):
-			w.WriteHeader(http.StatusNotFound) // nothing to replace
-		case r.Method == http.MethodPost && r.URL.Path == "/containers/create":
-			_ = json.NewDecoder(r.Body).Decode(&createPayload)
-			cmd := createPayload["Cmd"].([]any)
-			if cmd[0] != "mlflow" || cmd[4] != "models:/churn-classifier/3" {
-				t.Errorf("unexpected serve command: %v", cmd)
-			}
-			host := createPayload["HostConfig"].(map[string]any)
-			if host["NetworkMode"] != "mlaiops_default" {
-				t.Errorf("container must join the platform network: %v", host)
-			}
-			w.WriteHeader(http.StatusCreated)
-			_, _ = w.Write([]byte(`{"Id":"ctr-1"}`))
-		case r.Method == http.MethodPost && r.URL.Path == "/containers/ctr-1/start":
-			w.WriteHeader(http.StatusNoContent)
-		case r.Method == http.MethodGet && r.URL.Path == "/containers/json":
-			_, _ = w.Write([]byte(`[{"State":"running","Labels":{"mlaiops.serving":"true","mlaiops.model":"churn","mlaiops.artifact":"models:/churn-classifier/3","mlaiops.image":"ghcr.io/acme/churn:3"}}]`))
-		default:
-			t.Errorf("unexpected docker call %s %s", r.Method, r.URL.Path)
-			w.WriteHeader(http.StatusInternalServerError)
-		}
-	}))
-	return server, &calls, &createPayload
+var fetchEnv = []string{
+	"MLFLOW_TRACKING_URI=http://mlflow:5000",
+	"MLFLOW_S3_ENDPOINT_URL=http://objectstore:9000",
+	"AWS_ACCESS_KEY_ID=platform-key",
+	"AWS_SECRET_ACCESS_KEY=platform-secret",
 }
 
 func testManager(baseURL string) *Manager {
-	manager := NewManager("mlaiops-mlflow", "mlaiops_default", []string{"MLFLOW_TRACKING_URI=http://mlflow:5000"})
+	manager := NewManager("mlaiops-mlflow", "mlaiops_default", fetchEnv)
 	manager.BaseURL = baseURL
 	return manager
 }
 
+const servingName = "mlaiops-serve-churn"
+
 func TestDeployCreatesAndStartsContainer(t *testing.T) {
-	docker, calls, payload := fakeDocker(t)
-	defer docker.Close()
-	endpoint, err := testManager(docker.URL).Deploy(context.Background(), "churn", "models:/churn-classifier/3", "")
+	e, server := newFakeEngine(t)
+	endpoint, err := testManager(server.URL).Deploy(context.Background(), "churn", "models:/churn-classifier/3", "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if endpoint != "http://mlaiops-serve-churn:5001" {
 		t.Fatalf("unexpected endpoint %q", endpoint)
 	}
-	joined := strings.Join(*calls, " | ")
-	if !strings.Contains(joined, "DELETE") || !strings.Contains(joined, "containers/create") || !strings.Contains(joined, "start") {
-		t.Fatalf("expected replace->create->start sequence, got %s", joined)
+	if !e.called("DELETE /containers/"+servingName) || !e.called("POST /containers/"+servingName+"-id/start") {
+		t.Fatalf("expected replace->create->start sequence, got %v", e.calls)
 	}
-	if (*payload)["Image"] != "mlaiops-mlflow" {
-		t.Fatalf("configured default image was not used: %#v", (*payload)["Image"])
+	payload := e.created[servingName]
+	if payload["Image"] != e.images["mlaiops-mlflow"] {
+		t.Fatalf("configured default image was not used by ID: %#v", payload["Image"])
 	}
-	host := (*payload)["HostConfig"].(map[string]any)
+	cmd := strings.Join(anyStrings(payload["Cmd"]), " ")
+	if !strings.HasPrefix(cmd, "mlflow models serve -m "+modelPath+" ") {
+		t.Fatalf("serving container must load the fetched local model: %s", cmd)
+	}
+	host := payload["HostConfig"].(map[string]any)
+	if host["NetworkMode"] != "mlaiops_default" {
+		t.Fatalf("container must join the platform network: %v", host)
+	}
 	if strings.Join(anyStrings(host["CapDrop"]), ",") != "ALL" || strings.Join(anyStrings(host["SecurityOpt"]), ",") != "no-new-privileges" || host["PidsLimit"] != float64(defaultPidsLimit) {
 		t.Fatalf("serving container is missing hardening controls: %#v", host)
+	}
+	if labels := payload["Labels"].(map[string]any); labels["mlaiops.artifact"] != "models:/churn-classifier/3" {
+		t.Fatalf("artifact label missing: %#v", labels)
 	}
 }
 
 func TestDeployUsesModelSpecificServingImage(t *testing.T) {
-	docker, _, payload := fakeDocker(t)
-	defer docker.Close()
-	manager := testManager(docker.URL)
+	e, server := newFakeEngine(t)
+	e.images["ghcr.io/acme/churn-xgboost:3"] = "sha256:" + strings.Repeat("b", 64)
+	manager := testManager(server.URL)
+	manager.Images.AllowedPrefixes = []string{"ghcr.io/acme/"}
 	manager.PidsLimit = maximumPidsLimit + 1
 	if _, err := manager.Deploy(context.Background(), "churn", "models:/churn-classifier/3", " ghcr.io/acme/churn-xgboost:3 "); err != nil {
 		t.Fatal(err)
 	}
-	if (*payload)["Image"] != "ghcr.io/acme/churn-xgboost:3" {
-		t.Fatalf("model-specific image was not selected: %#v", (*payload)["Image"])
+	payload := e.created[servingName]
+	if payload["Image"] != e.images["ghcr.io/acme/churn-xgboost:3"] {
+		t.Fatalf("model-specific image was not selected by ID: %#v", payload["Image"])
 	}
-	labels := (*payload)["Labels"].(map[string]any)
-	if labels["mlaiops.image"] != "ghcr.io/acme/churn-xgboost:3" {
-		t.Fatalf("selected image was not recorded in labels: %#v", labels)
+	labels := payload["Labels"].(map[string]any)
+	if labels["mlaiops.image"] != "ghcr.io/acme/churn-xgboost:3" || labels["mlaiops.image.id"] != e.images["ghcr.io/acme/churn-xgboost:3"] {
+		t.Fatalf("selected image and its resolved ID were not recorded in labels: %#v", labels)
 	}
-	host := (*payload)["HostConfig"].(map[string]any)
+	host := payload["HostConfig"].(map[string]any)
 	if host["PidsLimit"] != float64(maximumPidsLimit) {
 		t.Fatalf("PID limit should be capped at %d: %#v", maximumPidsLimit, host)
+	}
+	if fetch := e.created[servingName+"-fetch"]; fetch["Image"] != "mlaiops-mlflow" {
+		t.Fatalf("the request's serving_image must never run the credentialed fetch: %#v", fetch["Image"])
+	}
+}
+
+// Issue #3: model containers run untrusted code and must not get the
+// platform's object-store or tracking credentials.
+func TestServingContainerGetsNoCredentials(t *testing.T) {
+	e, server := newFakeEngine(t)
+	if _, err := testManager(server.URL).Deploy(context.Background(), "churn", "models:/churn-classifier/3", ""); err != nil {
+		t.Fatal(err)
+	}
+	payload := e.created[servingName]
+	if env := anyStrings(payload["Env"]); len(env) != 0 {
+		t.Fatalf("serving container must get an empty environment, got %v", env)
+	}
+	raw := strings.Join(anyStrings(payload["Env"]), " ") + strings.Join(anyStrings(payload["Cmd"]), " ")
+	for _, secret := range []string{"platform-secret", "platform-key", "AWS_", "MLFLOW_"} {
+		if strings.Contains(raw, secret) {
+			t.Fatalf("serving container leaks %q: %s", secret, raw)
+		}
+	}
+	mounts := payload["HostConfig"].(map[string]any)["Mounts"].([]any)
+	mount := mounts[0].(map[string]any)
+	if len(mounts) != 1 || mount["Source"] != servingName+"-model" || mount["Target"] != artifactMount || mount["ReadOnly"] != true {
+		t.Fatalf("serving container must mount only its own artifact volume read-only: %#v", mounts)
+	}
+}
+
+func TestFetchContainerDownloadsArtifactWithCredentials(t *testing.T) {
+	e, server := newFakeEngine(t)
+	if _, err := testManager(server.URL).Deploy(context.Background(), "churn", "models:/churn-classifier/3", ""); err != nil {
+		t.Fatal(err)
+	}
+	fetch := e.created[servingName+"-fetch"]
+	if fetch == nil {
+		t.Fatalf("no fetch container was created: %v", e.calls)
+	}
+	if strings.Join(anyStrings(fetch["Env"]), " ") != strings.Join(fetchEnv, " ") {
+		t.Fatalf("fetch container must carry the store credentials: %v", fetch["Env"])
+	}
+	cmd := anyStrings(fetch["Cmd"])
+	if len(cmd) != 4 || cmd[0] != "python" || cmd[2] != fetchScript || cmd[3] != "models:/churn-classifier/3" {
+		t.Fatalf("artifact URI must be passed as an argument to the fixed fetch script: %v", cmd)
+	}
+	host := fetch["HostConfig"].(map[string]any)
+	if strings.Join(anyStrings(host["CapDrop"]), ",") != "ALL" || host["RestartPolicy"].(map[string]any)["Name"] != "no" {
+		t.Fatalf("fetch container must be hardened and never restart: %#v", host)
+	}
+	if mount := host["Mounts"].([]any)[0].(map[string]any); mount["ReadOnly"] == true || mount["Source"] != servingName+"-model" {
+		t.Fatalf("fetch container must write the artifact volume: %#v", mount)
+	}
+	if !e.called("POST /volumes/create") || !e.called("DELETE /containers/"+servingName+"-fetch-id") {
+		t.Fatalf("expected a fresh volume and removal of the fetch container: %v", e.calls)
+	}
+}
+
+func TestDeployFailsWhenFetchFails(t *testing.T) {
+	e, server := newFakeEngine(t)
+	e.script(servingName+"-fetch-id", `{"State":{"Status":"running"}}`, `{"State":{"Status":"exited","ExitCode":1}}`)
+	e.logs[servingName+"-fetch-id"] = "botocore.exceptions.NoCredentialsError"
+	manager := testManager(server.URL)
+	manager.sleep = func(context.Context, time.Duration) error { return nil }
+	_, err := manager.Deploy(context.Background(), "churn", "models:/churn-classifier/3", "")
+	if err == nil || !strings.Contains(err.Error(), "exited with code 1") || !strings.Contains(err.Error(), "NoCredentialsError") {
+		t.Fatalf("a failed fetch must fail the deploy with the fetch output: %v", err)
+	}
+	if e.created[servingName] != nil {
+		t.Fatal("no serving container may start after a failed fetch")
+	}
+	if !e.called("DELETE /containers/"+servingName+"-fetch-id") || !e.called("DELETE /volumes/"+servingName+"-model") {
+		t.Fatalf("a failed fetch must clean up its container and volume: %v", e.calls)
+	}
+}
+
+func TestFetchTimeoutIsHonored(t *testing.T) {
+	e, server := newFakeEngine(t)
+	e.script(servingName+"-fetch-id", `{"State":{"Status":"running"}}`)
+	manager := testManager(server.URL)
+	manager.ReadyTimeout = 10 * time.Second
+	clock := time.Unix(0, 0)
+	manager.now = func() time.Time { return clock }
+	manager.sleep = func(_ context.Context, d time.Duration) error { clock = clock.Add(d); return nil }
+	_, err := manager.Deploy(context.Background(), "churn", "models:/churn-classifier/3", "")
+	if err == nil || !strings.Contains(err.Error(), "timed out") {
+		t.Fatalf("expected a fetch timeout, got %v", err)
+	}
+	if polls := e.inspects[servingName+"-fetch-id"]; polls < 10 || polls > 12 {
+		t.Fatalf("expected about 10 one-second polls before the timeout, got %d", polls)
 	}
 }
 
@@ -131,9 +209,8 @@ func TestContainerNameIsStableDNSLabelForUnsafeModelName(t *testing.T) {
 }
 
 func TestListReadsLabels(t *testing.T) {
-	docker, _, _ := fakeDocker(t)
-	defer docker.Close()
-	deployments, err := testManager(docker.URL).List(context.Background())
+	_, server := newFakeEngine(t)
+	deployments, err := testManager(server.URL).List(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -144,7 +221,7 @@ func TestListReadsLabels(t *testing.T) {
 
 func TestPinnedAPIVersionPrefixesPaths(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !strings.HasPrefix(r.URL.Path, "/v1.44/containers/") {
+		if !strings.HasPrefix(r.URL.Path, "/v1.44/") {
 			t.Fatalf("expected versioned path, got %s", r.URL.Path)
 		}
 		w.WriteHeader(http.StatusNotFound)
@@ -158,9 +235,175 @@ func TestPinnedAPIVersionPrefixesPaths(t *testing.T) {
 }
 
 func TestUndeployMissingContainerIsNoError(t *testing.T) {
-	docker, _, _ := fakeDocker(t)
-	defer docker.Close()
-	if err := testManager(docker.URL).Undeploy(context.Background(), "ghost"); err != nil {
+	e, server := newFakeEngine(t)
+	if err := testManager(server.URL).Undeploy(context.Background(), "ghost"); err != nil {
 		t.Fatalf("missing container must not error: %v", err)
 	}
+	if !e.called("DELETE /volumes/mlaiops-serve-ghost-model") {
+		t.Fatalf("undeploy must remove the artifact volume: %v", e.calls)
+	}
+}
+
+func TestUndeployReportsEngineErrors(t *testing.T) {
+	e, server := newFakeEngine(t)
+	e.on("DELETE /containers/"+servingName, http.StatusInternalServerError, `boom`)
+	if err := testManager(server.URL).Undeploy(context.Background(), "churn"); err == nil {
+		t.Fatal("a 500 on delete must be reported")
+	}
+}
+
+func TestDeployFailsWhenCreateReturnsNotFound(t *testing.T) {
+	e, server := newFakeEngine(t)
+	e.on("POST /containers/create", http.StatusNotFound, `{"message":"No such image: mlaiops-mlflow:latest"}`)
+	endpoint, err := testManager(server.URL).Deploy(context.Background(), "churn", "models:/churn/1", "")
+	if err == nil || endpoint != "" {
+		t.Fatalf("missing image must fail the deploy, got endpoint %q err %v", endpoint, err)
+	}
+	if !strings.Contains(err.Error(), "not present") || !errors.Is(err, ErrNotFound) {
+		t.Fatalf("error should name the missing image: %v", err)
+	}
+	if e.countCalls("POST /containers/") != e.countCalls("POST /containers/create") {
+		t.Fatalf("start must not be called after a failed create: %v", e.calls)
+	}
+}
+
+func TestDeployFailsWhenStartReturnsNotFound(t *testing.T) {
+	e, server := newFakeEngine(t)
+	e.on("POST /containers/"+servingName+"-id/start", http.StatusNotFound, `{"message":"No such container"}`)
+	if endpoint, err := testManager(server.URL).Deploy(context.Background(), "churn", "models:/churn/1", ""); err == nil || endpoint != "" {
+		t.Fatalf("404 on start must fail the deploy, got endpoint %q err %v", endpoint, err)
+	}
+}
+
+func TestDeployRejectsEmptyContainerID(t *testing.T) {
+	e, server := newFakeEngine(t)
+	e.routes["POST /containers/create"] = func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("name") == servingName {
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write([]byte(`{}`))
+			return
+		}
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"Id":"` + r.URL.Query().Get("name") + `-id"}`))
+	}
+	if _, err := testManager(server.URL).Deploy(context.Background(), "churn", "models:/churn/1", ""); err == nil {
+		t.Fatal("an empty container ID must fail the deploy")
+	}
+	if e.called("POST /containers//start") {
+		t.Fatal("start must not be called with an empty ID")
+	}
+}
+
+func TestListFailsWhenEngineReturnsNotFound(t *testing.T) {
+	e, server := newFakeEngine(t)
+	e.on("GET /containers/json", http.StatusNotFound, `page not found`)
+	if _, err := testManager(server.URL).List(context.Background()); err == nil {
+		t.Fatal("List must report a 404 as an error")
+	}
+}
+
+func TestDemuxLogs(t *testing.T) {
+	raw := append(frame(1, "line one\n"), frame(2, "line two\n")...)
+	if got := demuxLogs(raw); got != "line one\nline two\n" {
+		t.Fatalf("unexpected demux %q", got)
+	}
+	if got := demuxLogs([]byte("plain tty output")); got != "plain tty output" {
+		t.Fatalf("unframed output must pass through, got %q", got)
+	}
+}
+
+// Issue #5: the endpoint is live only once the model answers its health check.
+func TestDeployWaitsForHealthy(t *testing.T) {
+	e, server := newFakeEngine(t)
+	id := servingName + "-id"
+	e.script(id,
+		`{"State":{"Status":"running","Health":{"Status":"starting"}}}`,
+		`{"State":{"Status":"running","Health":{"Status":"starting"}}}`,
+		`{"State":{"Status":"running","Health":{"Status":"healthy"}}}`)
+	manager := testManager(server.URL)
+	sleeps := 0
+	manager.sleep = func(context.Context, time.Duration) error { sleeps++; return nil }
+	endpoint, err := manager.Deploy(context.Background(), "churn", "models:/churn/1", "")
+	if err != nil || endpoint == "" {
+		t.Fatalf("deploy should succeed once healthy: %q %v", endpoint, err)
+	}
+	if e.inspects[id] != 3 {
+		t.Fatalf("deploy returned before the container was healthy: %d inspections", e.inspects[id])
+	}
+	health := e.created[servingName]["Healthcheck"].(map[string]any)
+	test := strings.Join(anyStrings(health["Test"]), " ")
+	if !strings.HasPrefix(test, "CMD python -c ") || !strings.Contains(test, "http://127.0.0.1:5001/ping") || health["StartPeriod"] != float64(DefaultReadyTimeout) {
+		t.Fatalf("create payload must carry an MLflow /ping health check: %#v", health)
+	}
+	if e.removedContains(servingName) {
+		t.Fatalf("a healthy deployment must not be removed after it started: %v", e.removed)
+	}
+}
+
+func TestDeployFailsWhenModelServerIsNotReady(t *testing.T) {
+	for _, tc := range []struct {
+		name, state, want string
+	}{
+		{"unhealthy", `{"State":{"Status":"running","Health":{"Status":"unhealthy"}}}`, "readiness check"},
+		{"exited", `{"State":{"Status":"exited","ExitCode":1,"Health":{"Status":"starting"}}}`, "exited with code 1"},
+		{"restarted", `{"RestartCount":1,"State":{"Status":"running","Health":{"Status":"starting"}}}`, "restarted"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e, server := newFakeEngine(t)
+			id := servingName + "-id"
+			e.script(id, `{"State":{"Status":"running","Health":{"Status":"starting"}}}`, tc.state)
+			e.logs[id] = "ModuleNotFoundError: No module named 'xgboost'"
+			manager := testManager(server.URL)
+			manager.sleep = func(context.Context, time.Duration) error { return nil }
+			endpoint, err := manager.Deploy(context.Background(), "churn", "models:/churn/1", "")
+			if err == nil || endpoint != "" || !strings.Contains(err.Error(), tc.want) || !strings.Contains(err.Error(), "No module named 'xgboost'") {
+				t.Fatalf("expected a %q failure with the log tail, got %q %v", tc.want, endpoint, err)
+			}
+			if !e.called("GET /containers/" + id + "/logs") {
+				t.Fatal("the log tail was not requested")
+			}
+			if countOf(e.calls, "DELETE /containers/"+servingName) < 2 || !e.called("DELETE /volumes/"+servingName+"-model") {
+				t.Fatalf("a model server that never became ready must be removed: %v", e.calls)
+			}
+		})
+	}
+}
+
+func TestReadyTimeoutIsHonoredWithInjectedClock(t *testing.T) {
+	e, server := newFakeEngine(t)
+	id := servingName + "-id"
+	e.script(id, `{"State":{"Status":"running","Health":{"Status":"starting"}}}`)
+	manager := testManager(server.URL)
+	manager.ReadyTimeout = 30 * time.Second
+	clock := time.Unix(0, 0)
+	manager.now = func() time.Time { return clock }
+	manager.sleep = func(_ context.Context, d time.Duration) error { clock = clock.Add(d); return nil }
+	_, err := manager.Deploy(context.Background(), "churn", "models:/churn/1", "")
+	if err == nil || !strings.Contains(err.Error(), "not ready before the deploy timed out") {
+		t.Fatalf("expected a readiness timeout, got %v", err)
+	}
+	if elapsed := clock.Sub(time.Unix(0, 0)); elapsed < 30*time.Second || elapsed > 32*time.Second {
+		t.Fatalf("timeout should stop polling at 30s on the injected clock, stopped at %s", elapsed)
+	}
+}
+
+func countOf(calls []string, key string) int {
+	count := 0
+	for _, call := range calls {
+		if call == key {
+			count++
+		}
+	}
+	return count
+}
+
+func (e *fakeEngine) removedContains(name string) bool {
+	count := 0
+	for _, removed := range e.removed {
+		if removed == name {
+			count++
+		}
+	}
+	// The first removal is the replace step before create.
+	return count > 1
 }

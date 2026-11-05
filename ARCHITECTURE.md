@@ -31,10 +31,15 @@ delete returns `502`.
 `manager.go` holds `Manager`, which talks to the Docker Engine over its Unix socket
 (or `DOCKER_HOST_URL`) with plain HTTP and JSON, with no Docker SDK.
 
-- `Deploy` removes any existing container of the same name, then creates and starts
-  a new one. It uses the model's own `serving_image` when the request names one and
-  the configured `SERVE_IMAGE` otherwise.
-- `Undeploy` stops and removes a container; a missing container is not an error.
+- `Deploy` removes any existing deployment of the same name, downloads the
+  artifact into a fresh volume with a fetch container (`containers.go`), then
+  creates and starts the model server with that volume mounted read-only. It uses
+  the model's own `serving_image` when the request names one and the configured
+  `SERVE_IMAGE` otherwise. Any failure removes what the deploy created.
+- `Undeploy` removes the model server, any leftover fetch container and the
+  artifact volume; missing resources are not an error.
+- Every Engine error is an `*EngineError`; `errors.Is(err, ErrNotFound)` matches
+  a 404, and only `Undeploy` treats it as success.
 - `List` returns every container labelled `mlaiops.serving=true`, running or
   stopped, with its state.
 - `containerName` maps a model name to a DNS-safe container name with the
@@ -44,8 +49,9 @@ delete returns `502`.
 - `APIVersion` optionally pins the Engine API version (`DOCKER_API_VERSION`, for
   example `v1.44`); empty means the daemon's newest.
 
-`manager_test.go` runs every operation against a fake Engine API served by
-`httptest`.
+`manager_test.go` and `image_test.go` run every operation against the stateful
+fake Engine API in `fake_engine_test.go`, served by `httptest`, with an injected
+clock for the polling timeouts.
 
 ### `internal/runtimeconfig`
 
@@ -69,11 +75,23 @@ A two-stage build: a static, stripped binary (`CGO_ENABLED=0`) from
   capped at `4096`) and restart policy `unless-stopped`.
 - **Replace, never duplicate.** Deploying a name that already runs replaces it. This
   makes re-deploy and rollback idempotent.
-- **Fail closed.** The manager returns an error when it cannot create or start the
-  container, and the gateway then records the deployment as failed. It never
-  returns an endpoint for a container that did not start.
-- **Token check.** When `MLAIOPS_INTERNAL_TOKEN` is set, every route except
-  `/healthz` requires it as a bearer token.
+- **Allowlisted, pinned images.** A request's `serving_image` must match
+  `SERVE_IMAGE_ALLOWED_PREFIXES` (`image.go`) and, in production, carry a digest.
+  The container always runs the resolved image ID, recorded in `mlaiops.image.id`.
+- **No credentials in model servers.** Model servers run untrusted code. They get
+  an empty environment and a read-only artifact volume; only the trusted fetch
+  container, with a fixed command, sees store credentials.
+- **Fail closed, ready before live.** The serving container carries a Docker
+  `Healthcheck` that probes MLflow's `/ping`. `Deploy` polls the container until
+  the engine reports it `healthy`, and fails fast when it exits, restarts or turns
+  `unhealthy`, or when `SERVE_READY_TIMEOUT_SECONDS` (one budget for download and
+  load, default 80, inside the gateway's 90-second call) passes. A failure carries
+  the last 50 log lines and removes the container and volume, so the gateway never
+  records an endpoint that cannot serve.
+- **Token check.** The manager does not start without `MLAIOPS_INTERNAL_TOKEN`
+  (`runtimeconfig.ValidateServing`, which also enforces token strength in
+  production). Every route except `/healthz` requires `Authorization: Bearer
+  <token>`, compared in constant time.
 - **Single trusted host.** Access to the Docker socket is root-equivalent. The
   manager is the only Kionga service besides the pipeline runner that holds it.
 
@@ -88,8 +106,9 @@ A two-stage build: a static, stripped binary (`CGO_ENABLED=0`) from
   `deploy/mlflow/Dockerfile`) and `PLATFORM_NETWORK=mlaiops_default`.
 - **MLflow and object storage**: the manager passes `MLFLOW_TRACKING_URI`,
   `MLFLOW_S3_ENDPOINT_URL`, `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` from its
-  own environment to each model server, so `mlflow models serve` can resolve and
-  download the artifact.
+  own environment only to the short-lived artifact fetch container, which runs the
+  trusted `SERVE_FETCH_IMAGE` (default `SERVE_IMAGE`). Model servers never receive
+  them.
 
 ## Cross-cutting concerns
 
