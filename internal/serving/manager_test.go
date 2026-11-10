@@ -19,12 +19,12 @@ var fetchEnv = []string{
 }
 
 func testManager(baseURL string) *Manager {
-	manager := NewManager("mlaiops-mlflow", "mlaiops_default", fetchEnv)
+	manager := NewManager("kionga-mlflow", "kionga_default", fetchEnv)
 	manager.BaseURL = baseURL
 	return manager
 }
 
-const servingName = "mlaiops-serve-churn"
+const servingName = "kionga-serve-churn"
 
 func TestDeployCreatesAndStartsContainer(t *testing.T) {
 	e, server := newFakeEngine(t)
@@ -32,14 +32,14 @@ func TestDeployCreatesAndStartsContainer(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if endpoint != "http://mlaiops-serve-churn:5001" {
+	if endpoint != "http://kionga-serve-churn:5001" {
 		t.Fatalf("unexpected endpoint %q", endpoint)
 	}
 	if !e.called("DELETE /containers/"+servingName) || !e.called("POST /containers/"+servingName+"-id/start") {
 		t.Fatalf("expected replace->create->start sequence, got %v", e.calls)
 	}
 	payload := e.created[servingName]
-	if payload["Image"] != e.images["mlaiops-mlflow"] {
+	if payload["Image"] != e.images["kionga-mlflow"] {
 		t.Fatalf("configured default image was not used by ID: %#v", payload["Image"])
 	}
 	cmd := strings.Join(anyStrings(payload["Cmd"]), " ")
@@ -47,13 +47,13 @@ func TestDeployCreatesAndStartsContainer(t *testing.T) {
 		t.Fatalf("serving container must load the fetched local model: %s", cmd)
 	}
 	host := payload["HostConfig"].(map[string]any)
-	if host["NetworkMode"] != "mlaiops_default" {
+	if host["NetworkMode"] != "kionga_default" {
 		t.Fatalf("container must join the platform network: %v", host)
 	}
 	if strings.Join(anyStrings(host["CapDrop"]), ",") != "ALL" || strings.Join(anyStrings(host["SecurityOpt"]), ",") != "no-new-privileges" || host["PidsLimit"] != float64(defaultPidsLimit) {
 		t.Fatalf("serving container is missing hardening controls: %#v", host)
 	}
-	if labels := payload["Labels"].(map[string]any); labels["mlaiops.artifact"] != "models:/churn-classifier/3" {
+	if labels := payload["Labels"].(map[string]any); labels["kionga.artifact"] != "models:/churn-classifier/3" {
 		t.Fatalf("artifact label missing: %#v", labels)
 	}
 }
@@ -72,14 +72,14 @@ func TestDeployUsesModelSpecificServingImage(t *testing.T) {
 		t.Fatalf("model-specific image was not selected by ID: %#v", payload["Image"])
 	}
 	labels := payload["Labels"].(map[string]any)
-	if labels["mlaiops.image"] != "ghcr.io/acme/churn-xgboost:3" || labels["mlaiops.image.id"] != e.images["ghcr.io/acme/churn-xgboost:3"] {
+	if labels["kionga.image"] != "ghcr.io/acme/churn-xgboost:3" || labels["kionga.image.id"] != e.images["ghcr.io/acme/churn-xgboost:3"] {
 		t.Fatalf("selected image and its resolved ID were not recorded in labels: %#v", labels)
 	}
 	host := payload["HostConfig"].(map[string]any)
 	if host["PidsLimit"] != float64(maximumPidsLimit) {
 		t.Fatalf("PID limit should be capped at %d: %#v", maximumPidsLimit, host)
 	}
-	if fetch := e.created[servingName+"-fetch"]; fetch["Image"] != "mlaiops-mlflow" {
+	if fetch := e.created[servingName+"-fetch"]; fetch["Image"] != "kionga-mlflow" {
 		t.Fatalf("the request's serving_image must never run the credentialed fetch: %#v", fetch["Image"])
 	}
 }
@@ -203,7 +203,7 @@ func TestContainerNameIsStableDNSLabelForUnsafeModelName(t *testing.T) {
 	if first == containerName("Customer Churn V2") {
 		t.Fatalf("different unsafe model names must not collapse to one container: %q", first)
 	}
-	if got := containerName("churn-classifier"); got != "mlaiops-serve-churn-classifier" {
+	if got := containerName("churn-classifier"); got != "kionga-serve-churn-classifier" {
 		t.Fatalf("existing safe endpoint names should stay compatible, got %q", got)
 	}
 }
@@ -239,7 +239,7 @@ func TestUndeployMissingContainerIsNoError(t *testing.T) {
 	if err := testManager(server.URL).Undeploy(context.Background(), "ghost"); err != nil {
 		t.Fatalf("missing container must not error: %v", err)
 	}
-	if !e.called("DELETE /volumes/mlaiops-serve-ghost-model") {
+	if !e.called("DELETE /volumes/kionga-serve-ghost-model") {
 		t.Fatalf("undeploy must remove the artifact volume: %v", e.calls)
 	}
 }
@@ -254,7 +254,7 @@ func TestUndeployReportsEngineErrors(t *testing.T) {
 
 func TestDeployFailsWhenCreateReturnsNotFound(t *testing.T) {
 	e, server := newFakeEngine(t)
-	e.on("POST /containers/create", http.StatusNotFound, `{"message":"No such image: mlaiops-mlflow:latest"}`)
+	e.on("POST /containers/create", http.StatusNotFound, `{"message":"No such image: kionga-mlflow:latest"}`)
 	endpoint, err := testManager(server.URL).Deploy(context.Background(), "churn", "models:/churn/1", "")
 	if err == nil || endpoint != "" {
 		t.Fatalf("missing image must fail the deploy, got endpoint %q err %v", endpoint, err)

@@ -14,7 +14,7 @@ import (
 	"golang.org/x/net/publicsuffix"
 )
 
-var SecretNames = []string{"DATABASE_URL", "OIDC_CLIENT_SECRET", "MLAIOPS_INTERNAL_TOKEN", "KIONGA_CREDENTIAL_KEY", "S3_ACCESS_KEY", "S3_SECRET_KEY", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "REDIS_URL", "KAFKA_REST_TOKEN", "KFP_TOKEN", "MLFLOW_TOKEN", "OPENFAAS_PASSWORD", "LANGFUSE_SECRET_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "LLM_UPSTREAM_API_KEY", "KIONGA_JUPYTER_TOKEN", "KIONGA_IDE_PASSWORD", "TRACE_SINK_TOKEN"}
+var SecretNames = []string{"DATABASE_URL", "OIDC_CLIENT_SECRET", "KIONGA_INTERNAL_TOKEN", "KIONGA_CREDENTIAL_KEY", "S3_ACCESS_KEY", "S3_SECRET_KEY", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "REDIS_URL", "KAFKA_REST_TOKEN", "KFP_TOKEN", "MLFLOW_TOKEN", "OPENFAAS_PASSWORD", "LANGFUSE_SECRET_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "LLM_UPSTREAM_API_KEY", "KIONGA_JUPYTER_TOKEN", "KIONGA_IDE_PASSWORD", "TRACE_SINK_TOKEN"}
 var keyPattern = regexp.MustCompile(`^[A-Z][A-Z0-9_]*$`)
 
 func readFile(path string) ([]byte, error) {
@@ -82,18 +82,18 @@ func ValidateGateway() error {
 	if os.Getenv("KIONGA_ENVIRONMENT") != "production" {
 		return nil
 	}
-	for _, key := range []string{"DATABASE_URL", "OIDC_ISSUER", "OIDC_JWKS_URL", "OIDC_AUDIENCE", "OIDC_CLIENT_ID", "OIDC_CLIENT_SECRET", "OIDC_AUTH_URL", "OIDC_TOKEN_URL", "OIDC_REDIRECT_URL", "MLAIOPS_INTERNAL_TOKEN", "KIONGA_CREDENTIAL_KEY", "MLAIOPS_ALLOWED_ORIGIN"} {
+	for _, key := range []string{"DATABASE_URL", "OIDC_ISSUER", "OIDC_JWKS_URL", "OIDC_AUDIENCE", "OIDC_CLIENT_ID", "OIDC_CLIENT_SECRET", "OIDC_AUTH_URL", "OIDC_TOKEN_URL", "OIDC_REDIRECT_URL", "KIONGA_INTERNAL_TOKEN", "KIONGA_CREDENTIAL_KEY", "KIONGA_ALLOWED_ORIGIN"} {
 		if os.Getenv(key) == "" {
 			return fmt.Errorf("production requires %s", key)
 		}
 	}
-	for _, key := range []string{"OIDC_ISSUER", "OIDC_JWKS_URL", "OIDC_AUTH_URL", "OIDC_TOKEN_URL", "OIDC_REDIRECT_URL", "MLAIOPS_ALLOWED_ORIGIN"} {
+	for _, key := range []string{"OIDC_ISSUER", "OIDC_JWKS_URL", "OIDC_AUTH_URL", "OIDC_TOKEN_URL", "OIDC_REDIRECT_URL", "KIONGA_ALLOWED_ORIGIN"} {
 		u, err := url.Parse(os.Getenv(key))
 		if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil {
 			return fmt.Errorf("production requires an HTTPS URL for %s", key)
 		}
 	}
-	origin, _ := url.Parse(os.Getenv("MLAIOPS_ALLOWED_ORIGIN"))
+	origin, _ := url.Parse(os.Getenv("KIONGA_ALLOWED_ORIGIN"))
 	redirect, _ := url.Parse(os.Getenv("OIDC_REDIRECT_URL"))
 	if origin.Host != redirect.Host || redirect.Path != "/auth/callback" {
 		return fmt.Errorf("OIDC_REDIRECT_URL must match the public origin and /auth/callback")
@@ -112,7 +112,7 @@ func ValidateGateway() error {
 	if err != nil || (db.Scheme != "postgres" && db.Scheme != "postgresql") || db.Host == "" || db.Query().Get("sslmode") != "verify-full" {
 		return fmt.Errorf("production DATABASE_URL must use PostgreSQL with sslmode=verify-full")
 	}
-	for _, key := range []string{"OIDC_CLIENT_SECRET", "MLAIOPS_INTERNAL_TOKEN"} {
+	for _, key := range []string{"OIDC_CLIENT_SECRET", "KIONGA_INTERNAL_TOKEN"} {
 		value := os.Getenv(key)
 		if len(value) < 24 || strings.Contains(strings.ToLower(value), "local") || strings.Contains(strings.ToLower(value), "change-me") {
 			return fmt.Errorf("production %s must be a strong non-development credential", key)
@@ -127,19 +127,19 @@ func ValidateGateway() error {
 
 // ValidateServing checks the serving manager's settings before it listens. The
 // manager drives the Docker socket, which is root-equivalent on the host, so it
-// refuses to start without MLAIOPS_INTERNAL_TOKEN in every environment, and in
+// refuses to start without KIONGA_INTERNAL_TOKEN in every environment, and in
 // production it also requires a strong, non-development token.
 func ValidateServing() error {
-	token := os.Getenv("MLAIOPS_INTERNAL_TOKEN")
+	token := os.Getenv("KIONGA_INTERNAL_TOKEN")
 	if token == "" {
-		return fmt.Errorf("serving-manager requires MLAIOPS_INTERNAL_TOKEN (or MLAIOPS_INTERNAL_TOKEN_FILE): it controls the Docker socket and never runs unauthenticated")
+		return fmt.Errorf("serving-manager requires KIONGA_INTERNAL_TOKEN (or KIONGA_INTERNAL_TOKEN_FILE): it controls the Docker socket and never runs unauthenticated")
 	}
 	if os.Getenv("KIONGA_ENVIRONMENT") != "production" {
 		return nil
 	}
 	lower := strings.ToLower(token)
 	if len(token) < 24 || strings.Contains(lower, "local") || strings.Contains(lower, "change-me") {
-		return fmt.Errorf("production MLAIOPS_INTERNAL_TOKEN must be a strong non-development credential of at least 24 characters")
+		return fmt.Errorf("production KIONGA_INTERNAL_TOKEN must be a strong non-development credential of at least 24 characters")
 	}
 	return nil
 }
