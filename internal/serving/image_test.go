@@ -30,14 +30,14 @@ func TestImagePolicy(t *testing.T) {
 		{"exact repository", "ghcr.io/acme/churn:4", false, true},
 		{"exact repository is not a prefix", "ghcr.io/acme/churn-other:4", false, false},
 		{"official image normalised", "docker.io/library/python:3.12", false, true},
-		{"configured default always allowed", "mlaiops-mlflow", true, true},
+		{"configured default always allowed", "kionga-mlflow", true, true},
 		{"invalid reference", "ghcr.io/kiongahq/x?y=1", false, false},
 		{"path traversal", "ghcr.io/kiongahq/../x", false, false},
 		{"uppercase repository", "ghcr.io/kiongahq/X", false, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			policy := ImagePolicy{AllowedPrefixes: allow, RequireDigest: tc.requireDigest}
-			err := policy.check(tc.image, "mlaiops-mlflow")
+			err := policy.check(tc.image, "kionga-mlflow")
 			if (err == nil) != tc.ok {
 				t.Fatalf("check(%q) = %v, want ok=%v", tc.image, err, tc.ok)
 			}
@@ -46,11 +46,11 @@ func TestImagePolicy(t *testing.T) {
 }
 
 func TestEmptyAllowlistAllowsOnlyDefaultImage(t *testing.T) {
-	err := ImagePolicy{}.check("ghcr.io/kiongahq/mlflow-serve@"+digest, "mlaiops-mlflow")
+	err := ImagePolicy{}.check("ghcr.io/kiongahq/mlflow-serve@"+digest, "kionga-mlflow")
 	if !errors.Is(err, ErrImageNotAllowed) || !strings.Contains(err.Error(), "SERVE_IMAGE_ALLOWED_PREFIXES") {
 		t.Fatalf("an empty allowlist must reject request images with a clear message: %v", err)
 	}
-	if err := (ImagePolicy{RequireDigest: true}).check("mlaiops-mlflow", "mlaiops-mlflow"); err != nil {
+	if err := (ImagePolicy{RequireDigest: true}).check("kionga-mlflow", "kionga-mlflow"); err != nil {
 		t.Fatalf("the configured default image must stay usable: %v", err)
 	}
 }
@@ -102,14 +102,14 @@ func TestDeployRunsResolvedImageID(t *testing.T) {
 	}
 	payload := e.created[servingName]
 	labels := payload["Labels"].(map[string]any)
-	if payload["Image"] != id || labels["mlaiops.image.id"] != id || labels["mlaiops.image"] != ref {
+	if payload["Image"] != id || labels["kionga.image.id"] != id || labels["kionga.image"] != ref {
 		t.Fatalf("container must run and record the resolved image ID: image %v labels %v", payload["Image"], labels)
 	}
 }
 
 func TestDeployFailsWhenImageMissing(t *testing.T) {
 	e, server := newFakeEngine(t)
-	delete(e.images, "mlaiops-mlflow")
+	delete(e.images, "kionga-mlflow")
 	_, err := testManager(server.URL).Deploy(context.Background(), "churn", "models:/churn/1", "")
 	if !errors.Is(err, ErrNotFound) || !strings.Contains(err.Error(), "not present") {
 		t.Fatalf("a missing image must fail clearly: %v", err)
@@ -121,8 +121,8 @@ func TestDeployFailsWhenImageMissing(t *testing.T) {
 
 func TestResolveImageRejectsInvalidID(t *testing.T) {
 	e, server := newFakeEngine(t)
-	e.on("GET /images/mlaiops-mlflow/json", http.StatusOK, `{"Id":"../../x"}`)
-	if _, err := testManager(server.URL).resolveImage(context.Background(), "mlaiops-mlflow"); err == nil {
+	e.on("GET /images/kionga-mlflow/json", http.StatusOK, `{"Id":"../../x"}`)
+	if _, err := testManager(server.URL).resolveImage(context.Background(), "kionga-mlflow"); err == nil {
 		t.Fatal("an invalid image ID must be rejected")
 	}
 }

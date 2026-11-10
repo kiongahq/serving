@@ -9,7 +9,7 @@ The serving manager is a small HTTP service in front of the Docker Engine API. T
 platform gateway sends it a model name and an MLflow artifact URI; the manager
 starts a container that runs `mlflow models serve` for that artifact on the
 platform's Docker network and returns the in-network endpoint
-(`http://mlaiops-serve-<name>:5001`). The gateway stores that endpoint and sends
+(`http://kionga-serve-<name>:5001`). The gateway stores that endpoint and sends
 prediction requests to it.
 
 It has no database. The running containers are the state: each carries labels that
@@ -40,10 +40,10 @@ delete returns `502`.
   artifact volume; missing resources are not an error.
 - Every Engine error is an `*EngineError`; `errors.Is(err, ErrNotFound)` matches
   a 404, and only `Undeploy` treats it as success.
-- `List` returns every container labelled `mlaiops.serving=true`, running or
+- `List` returns every container labelled `kionga.serving=true`, running or
   stopped, with its state.
 - `containerName` maps a model name to a DNS-safe container name with the
-  `mlaiops-serve-` prefix. A name that is not already DNS-safe, or is too long,
+  `kionga-serve-` prefix. A name that is not already DNS-safe, or is too long,
   gets a slug plus a short SHA-256 suffix, so two different model names never
   share a container.
 - `APIVersion` optionally pins the Engine API version (`DOCKER_API_VERSION`, for
@@ -77,7 +77,7 @@ A two-stage build: a static, stripped binary (`CGO_ENABLED=0`) from
   makes re-deploy and rollback idempotent.
 - **Allowlisted, pinned images.** A request's `serving_image` must match
   `SERVE_IMAGE_ALLOWED_PREFIXES` (`image.go`) and, in production, carry a digest.
-  The container always runs the resolved image ID, recorded in `mlaiops.image.id`.
+  The container always runs the resolved image ID, recorded in `kionga.image.id`.
 - **No credentials in model servers.** Model servers run untrusted code. They get
   an empty environment and a read-only artifact volume; only the trusted fetch
   container, with a fixed command, sees store credentials.
@@ -88,7 +88,7 @@ A two-stage build: a static, stripped binary (`CGO_ENABLED=0`) from
   load, default 80, inside the gateway's 90-second call) passes. A failure carries
   the last 50 log lines and removes the container and volume, so the gateway never
   records an endpoint that cannot serve.
-- **Token check.** The manager does not start without `MLAIOPS_INTERNAL_TOKEN`
+- **Token check.** The manager does not start without `KIONGA_INTERNAL_TOKEN`
   (`runtimeconfig.ValidateServing`, which also enforces token strength in
   production). Every route except `/healthz` requires `Authorization: Bearer
   <token>`, compared in constant time.
@@ -99,11 +99,11 @@ A two-stage build: a static, stripped binary (`CGO_ENABLED=0`) from
 
 - **platform**: the gateway calls `POST /deployments` when a model is deployed
   (`SERVING_MANAGER_URL`) and `DELETE /deployments/{name}` on rollback, sending
-  `MLAIOPS_INTERNAL_TOKEN`. Kubernetes installations use the platform operator and
+  `KIONGA_INTERNAL_TOKEN`. Kubernetes installations use the platform operator and
   KServe instead of this service.
 - **deploy**: `compose.yaml` builds this repository, mounts
-  `/var/run/docker.sock`, and sets `SERVE_IMAGE=mlaiops-mlflow` (built from
-  `deploy/mlflow/Dockerfile`) and `PLATFORM_NETWORK=mlaiops_default`.
+  `/var/run/docker.sock`, and sets `SERVE_IMAGE=kionga-mlflow` (built from
+  `deploy/mlflow/Dockerfile`) and `PLATFORM_NETWORK=kionga_default`.
 - **MLflow and object storage**: the manager passes `MLFLOW_TRACKING_URI`,
   `MLFLOW_S3_ENDPOINT_URL`, `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` from its
   own environment only to the short-lived artifact fetch container, which runs the

@@ -34,7 +34,7 @@ func newFakeEngine(t *testing.T) (*fakeEngine, *httptest.Server) {
 		created:  map[string]map[string]any{},
 		states:   map[string][]string{},
 		logs:     map[string]string{},
-		images:   map[string]string{"mlaiops-mlflow": "sha256:" + strings.Repeat("a", 64)},
+		images:   map[string]string{"kionga-mlflow": "sha256:" + strings.Repeat("a", 64)},
 		routes:   map[string]http.HandlerFunc{},
 		inspects: map[string]int{},
 	}
@@ -135,7 +135,7 @@ func (e *fakeEngine) serve(w http.ResponseWriter, r *http.Request) {
 		e.inspects[id]++
 		_, _ = w.Write([]byte(bodies[index]))
 	case r.Method == http.MethodGet && path == "/containers/json":
-		_, _ = w.Write([]byte(`[{"State":"running","Labels":{"mlaiops.serving":"true","mlaiops.model":"churn","mlaiops.artifact":"models:/churn-classifier/3","mlaiops.image":"ghcr.io/acme/churn:3"}}]`))
+		_, _ = w.Write([]byte(`[{"State":"running","Labels":{"kionga.serving":"true","kionga.model":"churn","kionga.artifact":"models:/churn-classifier/3","kionga.image":"ghcr.io/acme/churn:3"}}]`))
 	default:
 		e.t.Errorf("unexpected docker call %s %s", r.Method, r.URL.String())
 		w.WriteHeader(http.StatusInternalServerError)

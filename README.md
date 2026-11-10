@@ -40,14 +40,14 @@ manager with the rest of Kionga. To run it on its own against the local Docker
 Engine:
 
 ```bash
-export MLAIOPS_INTERNAL_TOKEN=$(openssl rand -hex 24)
+export KIONGA_INTERNAL_TOKEN=$(openssl rand -hex 24)
 SERVE_IMAGE=<an image with MLflow> ./bin/serving-manager      # listens on :8085
 
 curl -X POST http://localhost:8085/deployments \
-  -H "Authorization: Bearer $MLAIOPS_INTERNAL_TOKEN" \
+  -H "Authorization: Bearer $KIONGA_INTERNAL_TOKEN" \
   -H 'Content-Type: application/json' \
   -d '{"name": "churn", "artifact_uri": "models:/churn/1"}'
-# {"endpoint":"http://mlaiops-serve-churn:5001","name":"churn"}
+# {"endpoint":"http://kionga-serve-churn:5001","name":"churn"}
 ```
 
 | Method | Path | Purpose |
@@ -57,7 +57,7 @@ curl -X POST http://localhost:8085/deployments \
 | `POST` | `/deployments` | Start, or replace, the model server for a model |
 | `DELETE` | `/deployments/{name}` | Stop and remove a model server |
 
-`MLAIOPS_INTERNAL_TOKEN` (or `MLAIOPS_INTERNAL_TOKEN_FILE`) is required: the
+`KIONGA_INTERNAL_TOKEN` (or `KIONGA_INTERNAL_TOKEN_FILE`) is required: the
 manager refuses to start without it, because it drives the root-equivalent Docker
 socket. Every request except `/healthz` must send it as
 `Authorization: Bearer <token>`; the token is compared in constant time and a bare
@@ -73,7 +73,7 @@ Python chosen by the model's author. The manager therefore keeps platform
 credentials out of every model-serving container.
 
 - **Artifact pre-fetch.** For each deploy the manager creates a Docker volume
-  (`mlaiops-serve-<name>-model`) and runs a short-lived fetch container from the
+  (`kionga-serve-<name>-model`) and runs a short-lived fetch container from the
   operator's trusted image (`SERVE_FETCH_IMAGE`, default `SERVE_IMAGE`) with a
   fixed command that downloads the artifact with MLflow's resolver. That download
   only copies files; it never imports the model. The fetch container is the only
@@ -90,22 +90,22 @@ credentials out of every model-serving container.
   `registry.internal:5000/`); any other entry allows exactly one repository
   (`ghcr.io/acme/churn`). Docker Hub names are normalised, so `python` means
   `docker.io/library/python`. The list is empty by default: only the configured
-  `SERVE_IMAGE` runs, which keeps the standard `mlaiops-mlflow` image working. A
+  `SERVE_IMAGE` runs, which keeps the standard `kionga-mlflow` image working. A
   rejected image gets `422` and never reaches the engine.
 - **Pinned digests.** With `KIONGA_ENVIRONMENT=production`, or
   `SERVE_IMAGE_REQUIRE_DIGEST=true` elsewhere, a request image must be pinned as
   `name@sha256:<digest>`. Every deploy resolves the image to its content-addressed
-  ID, runs that ID, and records it in the `mlaiops.image.id` label next to the
-  requested reference in `mlaiops.image`. A missing image fails the deploy.
+  ID, runs that ID, and records it in the `kionga.image.id` label next to the
+  requested reference in `kionga.image`. A missing image fails the deploy.
 - **What operators configure.** Give the manager store credentials that can only
   read model artifacts (for example an object-store user with read-only access to
-  the `mlaiops-artifacts` and `mlaiops-models` buckets), not the store's root user.
+  the `kionga-artifacts` and `kionga-models` buckets), not the store's root user.
   They are visible to anyone with Docker access while a fetch container runs.
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `MLAIOPS_INTERNAL_TOKEN` | required | Bearer token for every route except `/healthz` |
-| `SERVE_IMAGE` | `mlaiops-mlflow` | Default model server image, trusted operator configuration |
+| `KIONGA_INTERNAL_TOKEN` | required | Bearer token for every route except `/healthz` |
+| `SERVE_IMAGE` | `kionga-mlflow` | Default model server image, trusted operator configuration |
 | `SERVE_IMAGE_ALLOWED_PREFIXES` | empty | Registries or repositories a request's `serving_image` may use |
 | `SERVE_IMAGE_REQUIRE_DIGEST` | `true` in production, else `false` | Require `@sha256:` digests on request images; production cannot disable it |
 | `SERVE_FETCH_IMAGE` | `SERVE_IMAGE` | Trusted image with MLflow and store support that downloads artifacts |

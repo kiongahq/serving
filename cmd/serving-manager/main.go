@@ -33,7 +33,7 @@ func main() {
 	}
 	// The store and tracking credentials go only to the trusted artifact fetch
 	// container; model-serving containers never receive them.
-	manager := serving.NewManager(getenv("SERVE_IMAGE", "mlaiops-mlflow"), getenv("PLATFORM_NETWORK", "mlaiops_default"), env)
+	manager := serving.NewManager(getenv("SERVE_IMAGE", "kionga-mlflow"), getenv("PLATFORM_NETWORK", "kionga_default"), env)
 	manager.FetchImage = os.Getenv("SERVE_FETCH_IMAGE")
 	policy, err := imagePolicy()
 	if err != nil {
@@ -108,9 +108,9 @@ func main() {
 }
 
 // authorized fails closed: the manager starts containers through the Docker
-// socket, so without MLAIOPS_INTERNAL_TOKEN it refuses every call.
+// socket, so without KIONGA_INTERNAL_TOKEN it refuses every call.
 func authorized(r *http.Request) bool {
-	token := os.Getenv("MLAIOPS_INTERNAL_TOKEN")
+	token := os.Getenv("KIONGA_INTERNAL_TOKEN")
 	bearer, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
 	return token != "" && ok && subtle.ConstantTimeCompare([]byte(bearer), []byte(token)) == 1
 }

@@ -177,7 +177,7 @@ func (m *Manager) fetchArtifact(ctx context.Context, name, artifactURI string, p
 	if fetchImage == "" {
 		return errors.New("artifact fetch image is not configured")
 	}
-	labels := map[string]string{"mlaiops.serving.artifact": "true", "mlaiops.model": name}
+	labels := map[string]string{"kionga.serving.artifact": "true", "kionga.model": name}
 	if _, err := m.do(ctx, http.MethodPost, "/volumes/create", map[string]any{"Name": volumeName(name), "Labels": labels}, nil); err != nil {
 		return fmt.Errorf("create artifact volume: %w", err)
 	}

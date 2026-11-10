@@ -169,7 +169,7 @@ func (m *Manager) doRaw(ctx context.Context, method, path string, input any) (in
 	return response.StatusCode, raw, nil
 }
 
-const containerPrefix = "mlaiops-serve-"
+const containerPrefix = "kionga-serve-"
 
 // containerName preserves existing DNS-safe model names. Unsafe or overlong names
 // receive a readable slug plus a stable hash so Docker and platform DNS always see
@@ -299,11 +299,11 @@ func (m *Manager) Deploy(ctx context.Context, name, artifactURI, servingImage st
 		},
 		"Env": []string{},
 		"Labels": map[string]string{
-			"mlaiops.serving":  "true",
-			"mlaiops.model":    name,
-			"mlaiops.artifact": artifactURI,
-			"mlaiops.image":    image,
-			"mlaiops.image.id": imageID,
+			"kionga.serving":  "true",
+			"kionga.model":    name,
+			"kionga.artifact": artifactURI,
+			"kionga.image":    image,
+			"kionga.image.id": imageID,
 		},
 		"Healthcheck": m.healthcheck(timeout),
 		"HostConfig": hostConfig(m.Network, pidsLimit, []map[string]any{
@@ -351,7 +351,7 @@ func (m *Manager) Undeploy(ctx context.Context, name string) error {
 
 // List returns the platform's serving deployments from container labels.
 func (m *Manager) List(ctx context.Context) ([]Deployment, error) {
-	filters := url.QueryEscape(`{"label":["mlaiops.serving=true"]}`)
+	filters := url.QueryEscape(`{"label":["kionga.serving=true"]}`)
 	var containers []struct {
 		Labels map[string]string `json:"Labels"`
 		State  string            `json:"State"`
@@ -361,11 +361,11 @@ func (m *Manager) List(ctx context.Context) ([]Deployment, error) {
 	}
 	deployments := make([]Deployment, 0, len(containers))
 	for _, container := range containers {
-		name := container.Labels["mlaiops.model"]
+		name := container.Labels["kionga.model"]
 		deployments = append(deployments, Deployment{
 			Name:         name,
-			ArtifactURI:  container.Labels["mlaiops.artifact"],
-			ServingImage: container.Labels["mlaiops.image"],
+			ArtifactURI:  container.Labels["kionga.artifact"],
+			ServingImage: container.Labels["kionga.image"],
 			Endpoint:     fmt.Sprintf("http://%s:%d", containerName(name), m.Port),
 			State:        container.State,
 		})
