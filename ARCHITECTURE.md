@@ -64,7 +64,7 @@ production checks); keep the shared loading rules in step.
 ### `Dockerfile`, `Makefile`
 
 A two-stage build: a static, stripped binary (`CGO_ENABLED=0`) from
-`golang:1.26.10-alpine`, run on `gcr.io/distroless/static-debian12:nonroot`. The
+`golang:1.26.11-alpine`, run on `gcr.io/distroless/static-debian12:nonroot`. The
 `SERVICE` build argument names the command to build. `make verify`, `make build` and
 `make image` are the local entry points.
 
