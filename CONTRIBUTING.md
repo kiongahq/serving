@@ -7,7 +7,7 @@ how the code is organized before you make a larger change.
 
 Prerequisites:
 
-- Go 1.26. `go.mod` declares `go 1.26.0` with `toolchain go1.26.10`; a newer local
+- Go 1.26. `go.mod` declares `go 1.26.0` with `toolchain go1.26.11`; a newer local
   Go downloads that toolchain automatically.
 - Docker with BuildKit, to build the image and to try the manager against a real
   engine.
@@ -61,7 +61,7 @@ image without publishing it.
 
 Use [Conventional Commits](https://www.conventionalcommits.org/), as the history
 does: `type(scope): summary` in the imperative mood, for example
-`fix(security): Go 1.26.10 for crypto/x509 GO-2026-6809`. Common types are `feat`,
+`fix(security): Go 1.26.11 for net/http GO-2026-6859`. Common types are `feat`,
 `fix`, `docs`, `test`, `ci` and `chore`.
 
 ## Pull requests
